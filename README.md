@@ -12,7 +12,8 @@ This project simulates real-world SRE workflows by combining:
 
 - Incident analysis (NLP via rules)  
 - Kubernetes operations  
-- Automated remediation
+- Automated remediation  
+- Deterministic diagnostics and root cause hints  
 
 ---
 
@@ -27,30 +28,55 @@ The agent can interpret human-like commands and execute actions such as:
 - List deployments
 
 ### 🔬 Troubleshooting
-- Get pod status
+- Get pod status (structured JSON)
 - Describe pod
 - Describe service
-- Get pod logs
+- Get pod logs (container-aware)
+- Get pod previous logs (CrashLoopBackOff)
 - Get pod node
 
 ### 🛠️ Remediation
 - Restart pods (via delete)
 - Detect CrashLoopBackOff and act automatically
+- Guarded auto-remediation (limit per workload)
+
+### 🧠 Intelligent Diagnostics (Deterministic)
+- Detect pod health state (healthy / unhealthy / unknown)
+- Suggest follow-up actions automatically
+- Execute diagnostic follow-up before remediation
+- Infer probable cause from logs using heuristics:
+  - Connection issues
+  - Permission errors
+  - Missing files
+  - Image pull failures
+  - Architecture mismatch
+  - Memory issues
 
 ---
 
 ## ⚙️ How it works
 
-1. User describes an incident in natural language
-2. The analyzer parses the request
-3. The agent maps it to an action
-4. The remediator executes a `kubectl` command
-5. Output is returned to the user
+1. User describes an incident in natural language  
+2. The analyzer parses the request  
+3. The agent maps it to an action  
+4. The remediator executes a `kubectl` command  
+5. The state evaluator determines health and next steps  
+6. The agent executes diagnostic follow-up (if applicable)  
+7. The agent applies auto-remediation (if needed and allowed)  
+8. A structured incident summary is generated and stored  
 
 ---
 
 ## 🧩 Architecture
-User Input → Analyzer → Action Mapping → Remediator → Kubernetes
+
+User Input  
+→ Analyzer  
+→ Action Mapping  
+→ Remediator (kubectl)  
+→ State Evaluator  
+→ Follow-up Engine  
+→ Remediation Guard  
+→ Incident Logger  
 
 ---
 
@@ -105,11 +131,50 @@ describe service demo-nginx in namespace sre-demo
 ```bash
 pod demo-nginx-xxx is in CrashLoopBackOff in namespace sre-demo, please restart pod
 ```
+
+*Check pod with full diagnostic + remediation:*
+```bash
+check pod crashloop-demo-xxx in namespace sre-demo
+```
+---
+
 ## ⚠️ Important Notes
 
 - This agent uses rule-based NLP (regex), not LLMs  
-- Designed for local or controlled environments 
+- Designed for local or controlled environments
+- All decisions are deterministic and explainable 
 
+---
+
+## 📊 Incident Summary (New)
+
+After execution, the agent generates a structured summary:
+
+- Detected state  
+- Health status  
+- Container name  
+- Restart count  
+- Follow-up executed  
+- Remediation applied  
+- Final outcome  
+
+Additionally, all incidents are stored in:
+
+```bash
+incident_history.log
+```
+---
+
+## 🔒 Safety & Control
+
+- Auto-remediation is protected by a guard:
+  - Max 2 remediations per workload  
+
+- All remediation actions are logged:
+
+```bash
+remediation.log
+```
 ---
 
 ## 💡 Why this project?
@@ -122,4 +187,7 @@ Most modern AI agents rely on external LLMs (Claude, GPT, etc.), which introduce
 
 This project explores an alternative:
 
-👉 Local, deterministic, low-cost SRE automation
+-  Local, deterministic, low-cost SRE automation
+-  Full control over execution
+-  Explainable decision-making
+-  No external APIs or token usage
