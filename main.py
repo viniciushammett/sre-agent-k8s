@@ -18,6 +18,7 @@ from remediators.kubectl_remediator import (
 from state_evaluator import evaluate_pod_state, PodStateEvaluation
 from remediation_guard import can_auto_remediate, register_remediation_attempt
 from log_analyzer import infer_probable_cause
+from cause_based_remediator import plan_next_steps
 
 AUTO_REMEDIATE = True
 AUTO_FOLLOW_UP = True
@@ -226,6 +227,9 @@ def main():
         follow_up_result = maybe_execute_follow_up(state_result)
         summary["follow_up_executed"] = follow_up_result["executed"]
 
+        cause_result = None
+        plan = None
+
         if follow_up_result["executed"] and follow_up_result["output"]:
             cause_result = infer_probable_cause(follow_up_result["output"])
             summary["probable_cause"] = cause_result["probable_cause"]
@@ -236,10 +240,33 @@ def main():
             print(f"Confidence: {cause_result['confidence']}")
             print(f"Matched pattern: {cause_result['matched_pattern']}")
 
+            plan = plan_next_steps(cause_result["matched_pattern"])
+            print("\n[+] Cause-based remediation plan")
+            print(f"Recommended checks: {plan['recommended_checks']}")
+            print(f"Requires human review: {plan['requires_human_review']}")
+            print(f"Explanation: {plan['explanation']}")
+            if (
+                not plan["requires_human_review"]
+                and cause_result["confidence"] != "low"
+                and plan["safe_remediation"]
+            ):
+                print(f"Safe remediation: {plan['safe_remediation']}")
+            else:
+                print("[INFO] Safe remediation skipped: requires human review or low confidence.")
+
+        cause_allows_remediation = (
+            plan is None
+            or (
+                not plan["requires_human_review"]
+                and cause_result["confidence"] != "low"
+            )
+        )
+
         if (
             AUTO_REMEDIATE
             and state_result["requires_remediation"]
             and state_result["recommended_action"] == "delete_pod"
+            and cause_allows_remediation
         ):
             namespace = params["namespace"]
             pod_name = params["pod_name"]
