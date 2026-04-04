@@ -62,8 +62,10 @@ The agent can interpret human-like commands and execute actions such as:
 4. The remediator executes a `kubectl` command  
 5. The state evaluator determines health and next steps  
 6. The agent executes diagnostic follow-up (if applicable)  
-7. The agent applies auto-remediation (if needed and allowed)  
-8. A structured incident summary is generated and stored  
+7. The log analyzer infers the probable cause from log output  
+8. The cause-based remediator produces a deterministic action plan  
+9. The agent applies auto-remediation (if needed and allowed by safety gates)  
+10. A structured incident summary is generated and stored  
 
 ---
 
@@ -75,6 +77,8 @@ User Input
 → Remediator (kubectl)  
 → State Evaluator  
 → Follow-up Engine  
+→ Log Analyzer  
+→ Cause-Based Remediator  
 → Remediation Guard  
 → Incident Logger  
 
@@ -155,6 +159,14 @@ After execution, the agent generates a structured summary:
 - Container name  
 - Restart count  
 - Follow-up executed  
+- Probable cause  
+- Confidence  
+- Matched pattern  
+- Cause-based plan applied  
+- Recommended checks  
+- Requires human review  
+- Safe remediation selected  
+- Cause explanation  
 - Remediation applied  
 - Final outcome  
 
@@ -167,8 +179,11 @@ incident_history.log
 
 ## 🔒 Safety & Control
 
-- Auto-remediation is protected by a guard:
-  - Max 2 remediations per workload  
+- Auto-remediation is protected by multiple safety gates:
+  - Max 2 remediations per workload (remediation guard)  
+  - Blocked if `requires_human_review` is true for the matched cause  
+  - Blocked if log analysis confidence is `low`  
+  - Blocked if no safe remediation is defined for the pattern  
 
 - All remediation actions are logged:
 
