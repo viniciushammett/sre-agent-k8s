@@ -135,6 +135,11 @@ def print_incident_summary(summary: dict):
     print(f"Probable cause: {summary['probable_cause']}")
     print(f"Confidence: {summary['confidence']}")
     print(f"Matched pattern: {summary['matched_pattern']}")
+    print(f"Cause-based plan applied: {summary['cause_based_plan_applied']}")
+    print(f"Recommended checks executed: {summary['recommended_checks_executed']}")
+    print(f"Requires human review: {summary['requires_human_review']}")
+    print(f"Safe remediation selected: {summary['safe_remediation_selected']}")
+    print(f"Cause explanation: {summary['cause_explanation']}")
     print(f"Final outcome: {summary['final_outcome']}")
     print("=" * 60)
 
@@ -166,6 +171,11 @@ def main():
         "probable_cause": None,
         "confidence": None,
         "matched_pattern": None,
+        "cause_based_plan_applied": False,
+        "recommended_checks_executed": None,
+        "requires_human_review": None,
+        "safe_remediation_selected": None,
+        "cause_explanation": None,
         "final_outcome": "No action performed.",
     }
 
@@ -241,6 +251,11 @@ def main():
             print(f"Matched pattern: {cause_result['matched_pattern']}")
 
             plan = plan_next_steps(cause_result["matched_pattern"])
+            summary["cause_based_plan_applied"] = True
+            summary["recommended_checks_executed"] = plan["recommended_checks"]
+            summary["requires_human_review"] = plan["requires_human_review"]
+            summary["safe_remediation_selected"] = plan["safe_remediation"]
+            summary["cause_explanation"] = plan["explanation"]
             print("\n[+] Cause-based remediation plan")
             print(f"Recommended checks: {plan['recommended_checks']}")
             print(f"Requires human review: {plan['requires_human_review']}")
