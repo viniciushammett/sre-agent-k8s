@@ -15,8 +15,9 @@ from remediators.kubectl_remediator import (
     list_pods_wide,
     list_services,
 )
-from state_evaluator import evaluate_pod_state
+from state_evaluator import evaluate_pod_state, PodStateEvaluation
 from remediation_guard import can_auto_remediate, register_remediation_attempt
+from log_analyzer import infer_probable_cause
 
 AUTO_REMEDIATE = True
 AUTO_FOLLOW_UP = True
@@ -80,7 +81,7 @@ def parse_status_output(output):
     return None
 
 
-def maybe_execute_follow_up(state_result: dict):
+def maybe_execute_follow_up(state_result: PodStateEvaluation):
     follow_up_action = state_result.get("suggested_follow_up_action")
     follow_up_params = state_result.get("suggested_follow_up_params", {})
 
@@ -130,6 +131,9 @@ def print_incident_summary(summary: dict):
     print(f"Remediation action: {summary['remediation_action']}")
     print(f"Remediation executed: {summary['remediation_executed']}")
     print(f"Remediation success: {summary['remediation_success']}")
+    print(f"Probable cause: {summary['probable_cause']}")
+    print(f"Confidence: {summary['confidence']}")
+    print(f"Matched pattern: {summary['matched_pattern']}")
     print(f"Final outcome: {summary['final_outcome']}")
     print("=" * 60)
 
@@ -158,6 +162,9 @@ def main():
         "remediation_action": None,
         "remediation_executed": False,
         "remediation_success": None,
+        "probable_cause": None,
+        "confidence": None,
+        "matched_pattern": None,
         "final_outcome": "No action performed.",
     }
 
@@ -218,6 +225,16 @@ def main():
 
         follow_up_result = maybe_execute_follow_up(state_result)
         summary["follow_up_executed"] = follow_up_result["executed"]
+
+        if follow_up_result["executed"] and follow_up_result["output"]:
+            cause_result = infer_probable_cause(follow_up_result["output"])
+            summary["probable_cause"] = cause_result["probable_cause"]
+            summary["confidence"] = cause_result["confidence"]
+            summary["matched_pattern"] = cause_result["matched_pattern"]
+            print("\n[+] Log analysis")
+            print(f"Probable cause: {cause_result['probable_cause']}")
+            print(f"Confidence: {cause_result['confidence']}")
+            print(f"Matched pattern: {cause_result['matched_pattern']}")
 
         if (
             AUTO_REMEDIATE
