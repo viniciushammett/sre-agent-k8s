@@ -1,4 +1,4 @@
-# 🚀 SRE Agent for Kubernetes (AI-powered)
+# SRE Agent for Kubernetes (AI-powered)
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white)
 ![Kubernetes](https://img.shields.io/badge/Kubernetes-Automation-326CE5?logo=kubernetes&logoColor=white)
