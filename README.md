@@ -52,6 +52,18 @@ The agent can interpret human-like commands and execute actions such as:
   - Architecture mismatch
   - Memory issues
 
+### 🖥️ Interactive CLI
+- REPL mode with persistent session context
+- Single-command mode for scripting
+- Command history in memory
+- Built-in help reference
+
+### 🗂️ Session Context
+- Active namespace persisted across commands
+- Active pod inferred from last operation
+- Dynamic prompt: `sre-agent [namespace]>`
+- Short commands without repeating namespace/pod
+
 ---
 
 ## ⚙️ How it works
@@ -96,8 +108,16 @@ User Input
 
 ### Run the agent
 
+**Interactive REPL mode** (recommended):
 ```bash
-sudo python3 main.py
+source venv/bin/activate
+python main.py
+```
+
+**Single command mode**:
+```bash
+source venv/bin/activate
+python main.py "list pods in namespace sre-demo"
 ```
 ## 🧪 Example commands:
 
@@ -139,6 +159,36 @@ pod demo-nginx-xxx is in CrashLoopBackOff in namespace sre-demo, please restart 
 *Check pod with full diagnostic + remediation:*
 ```bash
 check pod crashloop-demo-xxx in namespace sre-demo
+```
+
+*Session context — set namespace:*
+```bash
+set namespace sre-demo
+```
+
+*Session context — short commands (namespace inferred from context):*
+```bash
+logs
+check pod demo-nginx-xxx
+describe pod demo-nginx-xxx
+restart pod demo-nginx-xxx
+show previous logs
+```
+
+*Session context — inspect and clear:*
+```bash
+show context
+clear context
+```
+
+*Command history:*
+```bash
+history
+```
+
+*Help:*
+```bash
+help
 ```
 ---
 
