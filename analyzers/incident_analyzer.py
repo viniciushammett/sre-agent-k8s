@@ -5,13 +5,17 @@ from typing import Dict, Any
 def suggest_remediation(incident: str) -> Dict[str, Any]:
     text = incident.strip().lower()
 
-    match = re.search(r"(?:list|show)\s+pods(\s+wide)?\s+in\s+namespace\s+([a-z0-9-]+)", text)
+    match = re.search(
+        r"(?:list|show)\s+pods?(?:\s+wide)?(?:\s+running)?"
+        r"\s+in\s+(?:namespace\s+)?([a-z0-9-]+)(?:\s+namespace)?",
+        text,
+    )
     if match:
-        wide_flag = bool(match.group(1))
-        namespace = match.group(2)
+        namespace = match.group(1)
+        wide_flag = "wide" in text
         return {
-            "action": "list_pods",
-            "params": {"namespace": namespace, "wide": wide_flag},
+            "action": "list_pods_wide" if wide_flag else "list_pods",
+            "params": {"namespace": namespace},
             "reason": f"User requested pod listing for namespace {namespace} with wide={wide_flag}.",
         }
 
@@ -118,7 +122,11 @@ def suggest_remediation(incident: str) -> Dict[str, Any]:
             "reason": "User requested node listing.",
         }
 
-    match = re.search(r"(?:list|show)\s+all\s+pods?", text)
+    match = re.search(
+        r"(?:list|show)\s+(?:all\s+)?pods?\s*(?:running)?\s*(?:in\s+(?:all\s+)?namespaces?)?$"
+        r"|(?:list|show)\s+all\s+pods?\s*(?:running)?(?:\s+in\s+(?:all\s+)?namespaces?)?",
+        text,
+    )
     if match:
         return {
             "action": "list_all_pods",
