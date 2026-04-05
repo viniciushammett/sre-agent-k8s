@@ -102,6 +102,30 @@ def suggest_remediation(incident: str) -> Dict[str, Any]:
             "reason": f"User requested logs for pod {pod_name} in namespace {namespace}.",
         }
 
+    match = re.search(r"(?:list|show)\s+(?:all\s+)?namespaces?", text)
+    if match:
+        return {
+            "action": "list_namespaces",
+            "params": {},
+            "reason": "User requested namespace listing.",
+        }
+
+    match = re.search(r"(?:list|show)\s+(?:all\s+)?nodes?", text)
+    if match:
+        return {
+            "action": "list_nodes",
+            "params": {},
+            "reason": "User requested node listing.",
+        }
+
+    match = re.search(r"(?:list|show)\s+all\s+pods?", text)
+    if match:
+        return {
+            "action": "list_all_pods",
+            "params": {},
+            "reason": "User requested pod listing across all namespaces.",
+        }
+
     return {
         "action": None,
         "params": {},

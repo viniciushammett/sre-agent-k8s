@@ -11,7 +11,10 @@ from remediators.kubectl_remediator import (
     get_pod_node,
     get_pod_previous_logs,
     get_pod_status,
+    list_all_pods,
     list_deployments,
+    list_namespaces,
+    list_nodes,
     list_pods,
     list_pods_wide,
     list_services,
@@ -34,6 +37,15 @@ def execute_action(action: str, params: dict):
 
     if action == "list_pods_wide":
         return list_pods_wide(params["namespace"])
+
+    if action == "list_namespaces":
+        return list_namespaces()
+
+    if action == "list_nodes":
+        return list_nodes()
+
+    if action == "list_all_pods":
+        return list_all_pods()
 
     if action == "list_services":
         return list_services(params["namespace"])

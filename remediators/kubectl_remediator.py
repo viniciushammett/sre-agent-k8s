@@ -224,3 +224,45 @@ def get_pod_status(namespace: str, pod_name: str) -> Tuple[bool, str]:
         return False, exc.stderr.strip() or str(exc)
     except Exception as exc:
         return False, str(exc)
+
+
+def list_namespaces() -> Tuple[bool, str]:
+    """Lista todos os namespaces do cluster."""
+    try:
+        result = subprocess.run(
+            ["kubectl", "get", "namespaces"],
+            capture_output=True, text=True, timeout=15, check=True,
+        )
+        return True, result.stdout.strip()
+    except subprocess.CalledProcessError as exc:
+        return False, exc.stderr.strip() or str(exc)
+    except Exception as exc:
+        return False, str(exc)
+
+
+def list_nodes() -> Tuple[bool, str]:
+    """Lista todos os nodes do cluster."""
+    try:
+        result = subprocess.run(
+            ["kubectl", "get", "nodes"],
+            capture_output=True, text=True, timeout=15, check=True,
+        )
+        return True, result.stdout.strip()
+    except subprocess.CalledProcessError as exc:
+        return False, exc.stderr.strip() or str(exc)
+    except Exception as exc:
+        return False, str(exc)
+
+
+def list_all_pods() -> Tuple[bool, str]:
+    """Lista todos os pods de todos os namespaces."""
+    try:
+        result = subprocess.run(
+            ["kubectl", "get", "pods", "--all-namespaces"],
+            capture_output=True, text=True, timeout=15, check=True,
+        )
+        return True, result.stdout.strip()
+    except subprocess.CalledProcessError as exc:
+        return False, exc.stderr.strip() or str(exc)
+    except Exception as exc:
+        return False, str(exc)
