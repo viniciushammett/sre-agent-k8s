@@ -119,16 +119,45 @@ python main.py
 source venv/bin/activate
 python main.py "list pods in namespace sre-demo"
 ```
-## 🧪 Example commands:
+## 🧪 Example commands
 
-*List pods:*
+### 1. Cluster-wide (no namespace required)
+
+*List all namespaces:*
 ```bash
-please list pods in namespace sre-demo
+list namespaces
 ```
 
-*List pods (wide):*
+*List all nodes:*
 ```bash
-please list pods wide in namespace sre-demo
+list nodes
+```
+
+*List all pods across all namespaces:*
+```bash
+list all pods
+```
+
+### 2. Namespace operations (explicit namespace)
+
+*List pods in a namespace:*
+```bash
+list pods in namespace sre-demo
+```
+
+*List pods wide:*
+```bash
+list pods wide in namespace sre-demo
+```
+
+*List services:*
+```bash
+list services in namespace sre-demo
+```
+
+*List deployments:*
+```bash
+list deployments in namespace sre-demo
 ```
 
 *Get pod node:*
@@ -136,60 +165,79 @@ please list pods wide in namespace sre-demo
 which node is pod demo-nginx-xxx running on in namespace sre-demo
 ```
 
-*Get logs:*
-```bash
-show logs for pod demo-nginx-xxx in namespace sre-demo
-```
-
-*Describe pod:*
-```bash
-describe pod demo-nginx-xxx in namespace sre-demo
-```
-
 *Describe service:*
 ```bash
 describe service demo-nginx in namespace sre-demo
 ```
 
-*Restart pod (CrashLoop simulation):*
+*Restart pod (CrashLoop):*
 ```bash
 pod demo-nginx-xxx is in CrashLoopBackOff in namespace sre-demo, please restart pod
 ```
 
-*Check pod with full diagnostic + remediation:*
-```bash
-check pod crashloop-demo-xxx in namespace sre-demo
-```
+### 3. Session context — set namespace, then use short commands
 
-*Session context — set namespace:*
+*Set active namespace once:*
 ```bash
 set namespace sre-demo
 ```
 
-*Session context — short commands (namespace inferred from context):*
+*From here on, namespace is inferred automatically:*
+```bash
+list pods
+list services
+list deployments
+```
+
+### 4. Troubleshooting with active context
+
+*Check pod status (full diagnostic + remediation pipeline):*
+```bash
+check pod demo-nginx-xxx
+```
+
+*Describe pod:*
+```bash
+describe pod demo-nginx-xxx
+```
+
+*Get logs:*
 ```bash
 logs
-check pod demo-nginx-xxx
-describe pod demo-nginx-xxx
-restart pod demo-nginx-xxx
+```
+
+*Get previous logs (CrashLoopBackOff):*
+```bash
 show previous logs
 ```
 
-*Session context — inspect and clear:*
+*Restart pod:*
+```bash
+restart pod demo-nginx-xxx
+```
+
+### 5. Inspect / history / help
+
+*Show active session context:*
 ```bash
 show context
+```
+
+*Clear session context:*
+```bash
 clear context
 ```
 
-*Command history:*
+*Show command history:*
 ```bash
 history
 ```
 
-*Help:*
+*Show all available commands:*
 ```bash
 help
 ```
+
 ---
 
 ## ⚠️ Important Notes
