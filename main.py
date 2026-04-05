@@ -1,4 +1,5 @@
 import json
+import sys
 
 from analyzers.incident_analyzer import suggest_remediation
 from incident_logger import write_incident_summary
@@ -144,7 +145,8 @@ def print_incident_summary(summary: dict):
     print("=" * 60)
 
 
-def main():
+def process_user_input(query: str):
+    """Recebe a descrição do incidente e executa o pipeline completo."""
     print("=" * 60)
     print("SRE AGENT :: HTTP + SSH + K8s + Incident Analysis")
     print("=" * 60)
@@ -152,7 +154,7 @@ def main():
     print(f"[CONFIG] AUTO_FOLLOW_UP={AUTO_FOLLOW_UP}")
     print()
 
-    incident = input("Describe the incident: ").strip()
+    incident = query
     analysis = suggest_remediation(incident)
 
     summary = {
@@ -322,6 +324,44 @@ def main():
 
     print_incident_summary(summary)
     write_incident_summary(summary)
+
+
+def run_interactive_mode():
+    """Inicia o loop REPL interativo do agente."""
+    print("SRE Agent started.")
+    print("Type your request or 'exit' to quit.\n")
+
+    while True:
+        try:
+            query = input("sre-agent> ").strip()
+        except KeyboardInterrupt:
+            print("\nInterrupted. Goodbye!")
+            break
+        except EOFError:
+            print("\nGoodbye!")
+            break
+
+        if not query:
+            continue
+
+        if query.lower() in ("exit", "quit"):
+            print("Goodbye!")
+            break
+
+        process_user_input(query)
+
+
+def run_single_command_mode(query: str):
+    """Executa o agente uma única vez com a query fornecida via argumento."""
+    process_user_input(query)
+
+
+def main():
+    if len(sys.argv) > 1:
+        query = " ".join(sys.argv[1:])
+        run_single_command_mode(query)
+    else:
+        run_interactive_mode()
 
 
 if __name__ == "__main__":
