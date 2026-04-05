@@ -27,6 +27,17 @@ from cause_based_remediator import plan_next_steps
 AUTO_REMEDIATE = True
 AUTO_FOLLOW_UP = True
 
+_REQUIRED_NAMESPACE_ACTIONS = {
+    "list_pods", "list_pods_wide", "list_services", "list_deployments",
+    "get_pod_logs", "get_pod_previous_logs", "describe_pod",
+    "get_pod_status", "delete_pod", "get_pod_node",
+}
+
+_REQUIRED_POD_ACTIONS = {
+    "get_pod_logs", "get_pod_previous_logs", "describe_pod",
+    "get_pod_status", "delete_pod", "get_pod_node",
+}
+
 
 class SessionContext:
     """Mantém o contexto da sessão REPL entre comandos."""
@@ -53,6 +64,11 @@ class SessionContext:
         if not filled.get("pod_name") and self.active_pod:
             filled["pod_name"] = self.active_pod
         return filled
+
+    def clear(self) -> None:
+        """Limpa o contexto da sessão."""
+        self.active_namespace = None
+        self.active_pod = None
 
     def prompt(self) -> str:
         """Retorna o texto do prompt com namespace ativo se disponível."""
@@ -222,6 +238,17 @@ def process_user_input(query: str, ctx: SessionContext | None = None):
             return
         if ctx:
             analysis["params"] = ctx.fill(analysis["params"])
+        params_check = analysis["params"]
+        if analysis["action"] in _REQUIRED_NAMESPACE_ACTIONS:
+            if not params_check.get("namespace"):
+                print("[ERROR] Namespace não especificado e não encontrado no contexto.")
+                print("        Use: set namespace <nome>  ou inclua 'in namespace <nome>' no comando.")
+                return
+            if analysis["action"] in _REQUIRED_POD_ACTIONS:
+                if not params_check.get("pod_name"):
+                    print("[ERROR] Pod não especificado e não encontrado no contexto.")
+                    print("        Use: set namespace <nome> e inclua o nome do pod no comando.")
+                    return
         success, output = execute_action(analysis["action"], analysis["params"])
         print()
         if success:
@@ -265,6 +292,17 @@ def process_user_input(query: str, ctx: SessionContext | None = None):
     params = analysis["params"]
     if ctx:
         params = ctx.fill(params)
+
+    if action in _REQUIRED_NAMESPACE_ACTIONS:
+        if not params.get("namespace"):
+            print("[ERROR] Namespace não especificado e não encontrado no contexto.")
+            print("        Use: set namespace <nome>  ou inclua 'in namespace <nome>' no comando.")
+            return
+        if action in _REQUIRED_POD_ACTIONS:
+            if not params.get("pod_name"):
+                print("[ERROR] Pod não especificado e não encontrado no contexto.")
+                print("        Use: set namespace <nome> e inclua o nome do pod no comando.")
+                return
 
     if not action:
         print("\n[-] No remediation suggested for this incident.")
@@ -406,9 +444,47 @@ def process_user_input(query: str, ctx: SessionContext | None = None):
     write_incident_summary(summary)
 
 
+def print_help():
+    """Exibe os comandos disponíveis do agente."""
+    print(f"\n{'─' * 60}")
+    print("  COMANDOS DISPONÍVEIS")
+    print(f"{'─' * 60}")
+    print("""
+  GERAL
+    help / ?              → exibe esta ajuda
+    exit / quit           → encerra o agente
+
+  CLUSTER
+    list namespaces       → lista todos os namespaces
+    list nodes            → lista todos os nodes
+    list all pods         → lista pods em todos os namespaces
+
+  NAMESPACE
+    list pods in <namespace>
+    list pods running in <namespace>
+    list pods wide in <namespace>
+    list services in <namespace>
+    list deployments in <namespace>
+
+  TROUBLESHOOTING
+    check pod <pod> in <namespace>
+    describe pod <pod> in <namespace>
+    show logs for pod <pod> in <namespace>
+    which node is pod <pod> in <namespace>
+
+  SESSÃO (contexto ativo entre comandos)
+    set namespace <name>  → define namespace ativo
+    show context          → exibe contexto atual
+    clear context         → limpa contexto da sessão
+    history               → exibe histórico de comandos
+""")
+    print(f"{'─' * 60}")
+
+
 def run_interactive_mode():
     """Inicia o loop REPL interativo do agente."""
     ctx = SessionContext()
+    history = []
     print("SRE Agent started.")
     print("Type your request or 'exit' to quit.\n")
 
@@ -428,6 +504,48 @@ def run_interactive_mode():
         if query.lower() in ("exit", "quit"):
             print("Goodbye!")
             break
+
+        if query.lower() == "history":
+            if not history:
+                print("[HISTORY] Nenhum comando registrado.")
+            else:
+                print(f"\n{'─' * 60}")
+                print("  HISTORY")
+                print(f"{'─' * 60}")
+                for i, cmd in enumerate(history, 1):
+                    print(f"  {i:>3}. {cmd}")
+                print(f"{'─' * 60}")
+            continue
+
+        history.append(query)
+
+        if query.lower() in ("help", "?"):
+            print_help()
+            continue
+
+        if query.lower().startswith("set namespace "):
+            ns = query.split("set namespace ", 1)[1].strip()
+            if ns:
+                ctx.update({"namespace": ns})
+                print(f"[SESSION] namespace ativo: {ns}")
+            else:
+                print("[ERROR] Informe o namespace. Ex: set namespace sre-demo")
+            continue
+
+        if query.lower() == "show context":
+            if ctx.active_namespace or ctx.active_pod:
+                if ctx.active_namespace:
+                    print(f"[SESSION] namespace: {ctx.active_namespace}")
+                if ctx.active_pod:
+                    print(f"[SESSION] pod: {ctx.active_pod}")
+            else:
+                print("[SESSION] contexto limpo")
+            continue
+
+        if query.lower() == "clear context":
+            ctx.clear()
+            print("[SESSION] contexto limpo")
+            continue
 
         process_user_input(query, ctx)
 
