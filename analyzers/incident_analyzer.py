@@ -123,8 +123,7 @@ def suggest_remediation(incident: str) -> Dict[str, Any]:
         }
 
     match = re.search(
-        r"(?:list|show)\s+(?:all\s+)?pods?\s*(?:running)?\s*(?:in\s+(?:all\s+)?namespaces?)?$"
-        r"|(?:list|show)\s+all\s+pods?\s*(?:running)?(?:\s+in\s+(?:all\s+)?namespaces?)?",
+        r"(?:list|show)\s+all\s+pods?\s*(?:running)?(?:\s+in\s+(?:all\s+)?namespaces?)?",
         text,
     )
     if match:
@@ -132,6 +131,14 @@ def suggest_remediation(incident: str) -> Dict[str, Any]:
             "action": "list_all_pods",
             "params": {},
             "reason": "User requested pod listing across all namespaces.",
+        }
+
+    match = re.search(r"(?:list|show)\s+pods?(?:\s+running)?$", text)
+    if match:
+        return {
+            "action": "list_pods",
+            "params": {},
+            "reason": "User requested pod listing. Namespace will be inferred from session context.",
         }
 
     return {

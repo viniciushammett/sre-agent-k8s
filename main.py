@@ -28,6 +28,39 @@ AUTO_REMEDIATE = True
 AUTO_FOLLOW_UP = True
 
 
+class SessionContext:
+    """Mantém o contexto da sessão REPL entre comandos."""
+
+    def __init__(self):
+        self.active_namespace: str | None = None
+        self.active_pod: str | None = None
+
+    def update(self, params: dict) -> None:
+        """Atualiza o contexto com os params da última ação executada."""
+        if params.get("namespace"):
+            self.active_namespace = params["namespace"]
+        if params.get("pod_name"):
+            self.active_pod = params["pod_name"]
+
+    def fill(self, params: dict) -> dict:
+        """
+        Preenche params faltantes com valores do contexto ativo.
+        Retorna um novo dict sem modificar o original.
+        """
+        filled = dict(params)
+        if not filled.get("namespace") and self.active_namespace:
+            filled["namespace"] = self.active_namespace
+        if not filled.get("pod_name") and self.active_pod:
+            filled["pod_name"] = self.active_pod
+        return filled
+
+    def prompt(self) -> str:
+        """Retorna o texto do prompt com namespace ativo se disponível."""
+        if self.active_namespace:
+            return f"sre-agent [{self.active_namespace}]> "
+        return "sre-agent> "
+
+
 def execute_action(action: str, params: dict):
     if action == "delete_pod":
         return delete_pod(params["namespace"], params["pod_name"])
@@ -164,11 +197,16 @@ def print_incident_summary(summary: dict):
     print(f"{'═' * 60}")
 
 
-def process_user_input(query: str):
+def process_user_input(query: str, ctx: SessionContext | None = None):
     """Recebe a descrição do incidente e executa o pipeline completo."""
     print("=" * 60)
     print("SRE AGENT :: HTTP + SSH + K8s + Incident Analysis")
     print("=" * 60)
+    if ctx and ctx.active_namespace:
+        print(f"[SESSION] namespace={ctx.active_namespace}", end="")
+        if ctx.active_pod:
+            print(f"  pod={ctx.active_pod}", end="")
+        print()
     print(f"[CONFIG] AUTO_REMEDIATE={AUTO_REMEDIATE}")
     print(f"[CONFIG] AUTO_FOLLOW_UP={AUTO_FOLLOW_UP}")
     print()
@@ -182,10 +220,14 @@ def process_user_input(query: str):
         if not analysis["action"]:
             print("\n[!] Unknown command. Try: list namespaces, list pods in namespace default, etc.")
             return
+        if ctx:
+            analysis["params"] = ctx.fill(analysis["params"])
         success, output = execute_action(analysis["action"], analysis["params"])
         print()
         if success:
             print(output)
+            if ctx:
+                ctx.update(analysis["params"])
         else:
             print(f"[ERROR] {output}")
         return
@@ -221,6 +263,8 @@ def process_user_input(query: str):
 
     action = analysis["action"]
     params = analysis["params"]
+    if ctx:
+        params = ctx.fill(params)
 
     if not action:
         print("\n[-] No remediation suggested for this incident.")
@@ -230,6 +274,8 @@ def process_user_input(query: str):
 
     success, output = execute_action(action, params)
     summary["initial_action_success"] = success
+    if ctx and success:
+        ctx.update(params)
 
     _section("ACTION OUTPUT")
     print(output)
@@ -362,12 +408,13 @@ def process_user_input(query: str):
 
 def run_interactive_mode():
     """Inicia o loop REPL interativo do agente."""
+    ctx = SessionContext()
     print("SRE Agent started.")
     print("Type your request or 'exit' to quit.\n")
 
     while True:
         try:
-            query = input("sre-agent> ").strip()
+            query = input(ctx.prompt()).strip()
         except KeyboardInterrupt:
             print("\nInterrupted. Goodbye!")
             break
@@ -382,7 +429,7 @@ def run_interactive_mode():
             print("Goodbye!")
             break
 
-        process_user_input(query)
+        process_user_input(query, ctx)
 
 
 def run_single_command_mode(query: str):
