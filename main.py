@@ -23,9 +23,31 @@ from state_evaluator import evaluate_pod_state, PodStateEvaluation
 from remediation_guard import can_auto_remediate, register_remediation_attempt
 from log_analyzer import infer_probable_cause
 from cause_based_remediator import plan_next_steps
+from analyzers.diagnosis_engine import DiagnosisEngine
 
 AUTO_REMEDIATE = True
 AUTO_FOLLOW_UP = True
+
+
+class _RemediatorAdapter:
+    """Adapts module-level kubectl functions for DiagnosisEngine.
+    Swaps arg order (pod_name, namespace) → (namespace, pod_name) and unwraps Tuple[bool, str].
+    """
+
+    def get_pod_previous_logs(self, pod_name, namespace):
+        success, output = get_pod_previous_logs(namespace, pod_name)
+        return output if success else None
+
+    def describe_pod(self, pod_name, namespace):
+        success, output = describe_pod(namespace, pod_name)
+        return output if success else None
+
+    def get_pod_logs(self, pod_name, namespace):
+        success, output = get_pod_logs(namespace, pod_name)
+        return output if success else None
+
+
+_diagnosis_engine = DiagnosisEngine(_RemediatorAdapter())
 
 _REQUIRED_NAMESPACE_ACTIONS = {
     "list_pods", "list_pods_wide", "list_services", "list_deployments",
@@ -352,6 +374,29 @@ def process_user_input(query: str, ctx: SessionContext | None = None):
         print(f"Recommended action: {state_result['recommended_action']}")
         print(f"Suggested follow-up action: {state_result['suggested_follow_up_action']}")
         print(f"Suggested follow-up params: {state_result['suggested_follow_up_params']}")
+
+        if state_result["health_status"] != "healthy" and parsed_status:
+            diagnosis_report = _diagnosis_engine.investigate(
+                state=parsed_status,
+                pod_name=params.get("pod_name"),
+                namespace=params.get("namespace"),
+                container_name=container_name,
+            )
+            _section("DIAGNOSIS")
+            print(f"State:                 {diagnosis_report.state}")
+            print(f"Cause category:        {diagnosis_report.cause_category}")
+            print(f"Confidence:            {diagnosis_report.confidence}")
+            print(f"Hypothesis:            {diagnosis_report.hypothesis}")
+            if diagnosis_report.evidence:
+                print(f"Evidence ({len(diagnosis_report.evidence)} items collected):")
+                for e in diagnosis_report.evidence:
+                    print(f"  · {e[:100]}")
+            if diagnosis_report.recommended_actions:
+                print("Recommended actions:")
+                for i, act in enumerate(diagnosis_report.recommended_actions, 1):
+                    print(f"  {i}. {act}")
+            print(f"Safe to automate:      {diagnosis_report.safe_to_automate}")
+            print(f"Requires human review: {diagnosis_report.requires_human_review}")
 
         follow_up_result = maybe_execute_follow_up(state_result)
         summary["follow_up_executed"] = follow_up_result["executed"]
