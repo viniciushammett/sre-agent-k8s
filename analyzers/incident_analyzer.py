@@ -143,3 +143,30 @@ def suggest_remediation(incident: str) -> Dict[str, Any]:
             "'pod nginx-test is in CrashLoopBackOff in namespace default, please restart pod'."
         ),
     }
+
+
+# Ações que são simples requests de leitura — sem pipeline de remediação
+_REQUEST_ACTIONS = {
+    "list_pods",
+    "list_pods_wide",
+    "list_services",
+    "list_deployments",
+    "list_namespaces",
+    "list_nodes",
+    "list_all_pods",
+    "describe_pod",
+    "describe_service",
+    "get_pod_logs",
+    "get_pod_previous_logs",
+    "get_pod_node",
+}
+
+
+def classify_input(action: str | None) -> str:
+    """
+    Retorna 'request' para operações simples de leitura,
+    ou 'incident' para operações que requerem pipeline completo.
+    """
+    if action in _REQUEST_ACTIONS:
+        return "request"
+    return "incident"

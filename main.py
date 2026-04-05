@@ -1,7 +1,7 @@
 import json
 import sys
 
-from analyzers.incident_analyzer import suggest_remediation
+from analyzers.incident_analyzer import classify_input, suggest_remediation
 from incident_logger import write_incident_summary
 from remediators.kubectl_remediator import (
     delete_pod,
@@ -110,7 +110,7 @@ def maybe_execute_follow_up(state_result: PodStateEvaluation):
     if not follow_up_action:
         return result
 
-    print("\n[+] Follow-up recommendation detected")
+    _section("FOLLOW-UP")
     print(f"Follow-up action: {follow_up_action}")
     print(f"Follow-up params: {follow_up_params}")
 
@@ -120,7 +120,7 @@ def maybe_execute_follow_up(state_result: PodStateEvaluation):
 
     success, output = execute_action(follow_up_action, follow_up_params)
 
-    print("\n[+] Follow-up execution output")
+    _section("FOLLOW-UP OUTPUT")
     print(output)
 
     result["executed"] = True
@@ -129,10 +129,17 @@ def maybe_execute_follow_up(state_result: PodStateEvaluation):
     return result
 
 
+def _section(title: str):
+    """Imprime separador de seção padronizado."""
+    print(f"\n{'─' * 60}")
+    print(f"  {title}")
+    print(f"{'─' * 60}")
+
+
 def print_incident_summary(summary: dict):
-    print("\n" + "=" * 60)
-    print("INCIDENT SUMMARY")
-    print("=" * 60)
+    print(f"\n{'═' * 60}")
+    print(f"  INCIDENT SUMMARY")
+    print(f"{'═' * 60}")
     print(f"Incident: {summary['incident']}")
     print(f"Initial action: {summary['initial_action']}")
     print(f"Initial action success: {summary['initial_action_success']}")
@@ -154,7 +161,7 @@ def print_incident_summary(summary: dict):
     print(f"Safe remediation selected: {summary['safe_remediation_selected']}")
     print(f"Cause explanation: {summary['cause_explanation']}")
     print(f"Final outcome: {summary['final_outcome']}")
-    print("=" * 60)
+    print(f"{'═' * 60}")
 
 
 def process_user_input(query: str):
@@ -168,6 +175,20 @@ def process_user_input(query: str):
 
     incident = query
     analysis = suggest_remediation(incident)
+
+    input_type = classify_input(analysis["action"])
+
+    if input_type == "request":
+        if not analysis["action"]:
+            print("\n[!] Unknown command. Try: list namespaces, list pods in namespace default, etc.")
+            return
+        success, output = execute_action(analysis["action"], analysis["params"])
+        print()
+        if success:
+            print(output)
+        else:
+            print(f"[ERROR] {output}")
+        return
 
     summary = {
         "incident": incident,
@@ -193,7 +214,7 @@ def process_user_input(query: str):
         "final_outcome": "No action performed.",
     }
 
-    print("\n[+] Analysis result")
+    _section("ANALYSIS")
     print(f"Reason: {analysis['reason']}")
     print(f"Suggested action: {analysis['action']}")
     print(f"Parameters: {analysis['params']}")
@@ -210,7 +231,7 @@ def process_user_input(query: str):
     success, output = execute_action(action, params)
     summary["initial_action_success"] = success
 
-    print("\n[+] Action output")
+    _section("ACTION OUTPUT")
     print(output)
 
     if action == "get_pod_status" and success:
@@ -241,7 +262,7 @@ def process_user_input(query: str):
         summary["follow_up_action"] = state_result["suggested_follow_up_action"]
         summary["remediation_action"] = state_result["recommended_action"]
 
-        print("\n[+] State evaluation")
+        _section("STATE EVALUATION")
         print(f"Health status: {state_result['health_status']}")
         print(f"Requires remediation: {state_result['requires_remediation']}")
         print(f"Recommended action: {state_result['recommended_action']}")
@@ -259,7 +280,7 @@ def process_user_input(query: str):
             summary["probable_cause"] = cause_result["probable_cause"]
             summary["confidence"] = cause_result["confidence"]
             summary["matched_pattern"] = cause_result["matched_pattern"]
-            print("\n[+] Log analysis")
+            _section("LOG ANALYSIS")
             print(f"Probable cause: {cause_result['probable_cause']}")
             print(f"Confidence: {cause_result['confidence']}")
             print(f"Matched pattern: {cause_result['matched_pattern']}")
@@ -270,7 +291,7 @@ def process_user_input(query: str):
             summary["requires_human_review"] = plan["requires_human_review"]
             summary["safe_remediation_selected"] = plan["safe_remediation"]
             summary["cause_explanation"] = plan["explanation"]
-            print("\n[+] Cause-based remediation plan")
+            _section("REMEDIATION PLAN")
             print(f"Recommended checks: {plan['recommended_checks']}")
             print(f"Requires human review: {plan['requires_human_review']}")
             print(f"Explanation: {plan['explanation']}")
@@ -301,13 +322,14 @@ def process_user_input(query: str):
             pod_name = params["pod_name"]
 
             allowed, reason = can_auto_remediate(namespace, pod_name, "delete_pod")
-            print(f"\n[+] Remediation guard: {reason}")
+            _section("AUTO-REMEDIATION")
+            print(f"Remediation guard: {reason}")
 
             if allowed:
                 register_remediation_attempt(namespace, pod_name, "delete_pod")
                 rem_success, rem_output = execute_action("delete_pod", params)
 
-                print("\n[+] Auto-remediation output")
+                _section("AUTO-REMEDIATION OUTPUT")
                 print(rem_output)
 
                 summary["remediation_executed"] = True
