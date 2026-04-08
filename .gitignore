@@ -29,5 +29,5 @@ CLAUDE.md
 # Prompts e documentação local
 docs/
 tasks/
-.claude/commands/tests/
 .claude/
+tests/
