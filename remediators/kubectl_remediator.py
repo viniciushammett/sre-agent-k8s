@@ -320,6 +320,44 @@ def get_pod_owner(namespace: str, pod_name: str) -> dict:
         return {}
 
 
+def rollout_restart_statefulset(namespace: str, statefulset_name: str) -> Tuple[bool, str]:
+    """
+    Executa rollout restart em um StatefulSet.
+    Mais impactante que Deployment — pods com PVC têm indisponibilidade temporária.
+    """
+    try:
+        result = subprocess.run(
+            ["kubectl", "rollout", "restart", "statefulset", statefulset_name, "-n", namespace],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            return True, result.stdout.strip() or f"statefulset.apps/{statefulset_name} restarted"
+        return False, result.stderr.strip()
+    except subprocess.TimeoutExpired:
+        return False, f"Timeout ao executar rollout restart no statefulset {statefulset_name}"
+    except Exception as e:
+        return False, str(e)
+
+
+def rollout_restart_daemonset(namespace: str, daemonset_name: str) -> Tuple[bool, str]:
+    """
+    Executa rollout restart em um DaemonSet.
+    Afeta todos os nodes do cluster sequencialmente.
+    """
+    try:
+        result = subprocess.run(
+            ["kubectl", "rollout", "restart", "daemonset", daemonset_name, "-n", namespace],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            return True, result.stdout.strip() or f"daemonset.apps/{daemonset_name} restarted"
+        return False, result.stderr.strip()
+    except subprocess.TimeoutExpired:
+        return False, f"Timeout ao executar rollout restart no daemonset {daemonset_name}"
+    except Exception as e:
+        return False, str(e)
+
+
 def rollout_restart_deployment(namespace: str, deployment_name: str) -> Tuple[bool, str]:
     """
     Executa rollout restart em um deployment.

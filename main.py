@@ -27,6 +27,7 @@ from remediation_guard import can_auto_remediate, register_remediation_attempt
 from log_analyzer import infer_probable_cause
 from cause_based_remediator import plan_next_steps
 from analyzers.diagnosis_engine import DiagnosisEngine
+from analyzers.workload_classifier import WorkloadClassifier, NO_RESTART
 
 AUTO_REMEDIATE = True
 AUTO_FOLLOW_UP = True
@@ -40,6 +41,14 @@ class _KubectlFunctionsAdapter:
 
     def rollout_restart_deployment(self, namespace: str, deployment_name: str):
         return rollout_restart_deployment(namespace, deployment_name)
+
+    def rollout_restart_statefulset(self, namespace: str, statefulset_name: str):
+        from remediators.kubectl_remediator import rollout_restart_statefulset
+        return rollout_restart_statefulset(namespace, statefulset_name)
+
+    def rollout_restart_daemonset(self, namespace: str, daemonset_name: str):
+        from remediators.kubectl_remediator import rollout_restart_daemonset
+        return rollout_restart_daemonset(namespace, daemonset_name)
 
 
 class _RemediatorAdapter:
@@ -399,6 +408,28 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
         print(f"Suggested follow-up action: {state_result['suggested_follow_up_action']}")
         print(f"Suggested follow-up params: {state_result['suggested_follow_up_params']}")
 
+        # classificar workload antes de remediar
+        workload_info = None
+        if params.get("pod_name") and params.get("namespace"):
+            workload_classifier = WorkloadClassifier(active_remediator)
+            workload_info = workload_classifier.classify(
+                pod_name=params["pod_name"],
+                namespace=params["namespace"],
+            )
+            print(f"\n{'─' * 60}")
+            print("  WORKLOAD")
+            print(f"{'─' * 60}")
+            print(f"Pod:            {workload_info.pod_name}")
+            print(f"Workload type:  {workload_info.workload_type}")
+            if workload_info.workload_name:
+                print(f"Workload name:  {workload_info.workload_name}")
+            if workload_info.action_target:
+                print(f"Action target:  {workload_info.action_target}")
+            if workload_info.restart_warning:
+                print(f"[WARNING] {workload_info.restart_warning}")
+            if workload_info.error:
+                print(f"[ERROR] Workload classification failed: {workload_info.error}")
+
         if state_result["health_status"] != "healthy" and parsed_status:
             diagnosis_report = _diagnosis_engine.investigate(
                 state=parsed_status,
@@ -474,46 +505,75 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
             namespace = params["namespace"]
             pod_name = params["pod_name"]
 
-            allowed, reason = can_auto_remediate(namespace, pod_name, "delete_pod")
-            _section("AUTO-REMEDIATION")
-            print(f"Remediation guard: {reason}")
-
-            if allowed:
-                register_remediation_attempt(namespace, pod_name, "delete_pod")
-
-                owner = get_pod_owner(namespace=namespace, pod_name=pod_name)
-                deployment_name = owner.get("deployment_name")
-
-                if deployment_name:
-                    print(f"[OWNER] Pod pertence ao deployment '{deployment_name}'. Preferindo rollout restart.")
-                    rem_success, rem_output = active_remediator.rollout_restart_deployment(
-                        namespace=namespace,
-                        deployment_name=deployment_name,
-                    )
-                    print(f"[REMEDIATION] rollout restart: {'OK' if rem_success else 'FAILED'} — {rem_output}")
-                else:
-                    rem_success, rem_output = active_remediator.delete_pod(
-                        namespace=namespace,
-                        pod_name=pod_name,
-                    )
-                    print(f"[REMEDIATION] delete pod: {'OK' if rem_success else 'FAILED'} — {rem_output}")
-
-                _section("AUTO-REMEDIATION OUTPUT")
-                print(rem_output)
-
-                summary["remediation_executed"] = True
-                summary["remediation_success"] = rem_success
-
-                if rem_success:
-                    summary["final_outcome"] = "Follow-up collected and auto-remediation applied successfully."
-                else:
-                    summary["final_outcome"] = "Follow-up collected, but auto-remediation failed."
-            else:
-                summary["remediation_action"] = "delete_pod"
+            # gate: bloquear restart para Job e CronJob
+            if workload_info and workload_info.workload_type in NO_RESTART:
+                _section("AUTO-REMEDIATION")
+                print(f"[WORKLOAD GATE] Remediação bloqueada para {workload_info.workload_type}.")
+                if workload_info.workload_type == "Job":
+                    print("  Jobs não se resolvem com restart. Ações recomendadas:")
+                    print("  1. Analisar logs do pod falho")
+                    print("  2. Corrigir a causa raiz")
+                    print("  3. Criar novo Job se necessário")
+                elif workload_info.workload_type == "CronJob":
+                    print("  CronJobs são gerenciados automaticamente. Ações recomendadas:")
+                    print("  1. Analisar logs do pod falho")
+                    print("  2. Verificar schedule e configuração do CronJob")
+                    print("  3. Aguardar próximo ciclo ou triggerar manualmente")
                 summary["remediation_executed"] = False
-                summary["remediation_success"] = False
-                summary["final_outcome"] = "Auto-remediation was blocked by guard."
-                print("\n[-] Auto-remediation blocked by guard.")
+                summary["final_outcome"] = f"Auto-remediation blocked: workload type {workload_info.workload_type} does not support restart."
+                # pular remediação
+            else:
+                allowed, reason = can_auto_remediate(namespace, pod_name, "delete_pod")
+                _section("AUTO-REMEDIATION")
+                print(f"Remediation guard: {reason}")
+
+                if allowed:
+                    register_remediation_attempt(namespace, pod_name, "delete_pod")
+
+                    if workload_info and workload_info.recommended_action == "rollout_restart_statefulset":
+                        print(f"[OWNER] Pod pertence ao StatefulSet '{workload_info.workload_name}'. Executando rollout restart.")
+                        rem_success, rem_output = active_remediator.rollout_restart_statefulset(
+                            namespace=namespace,
+                            statefulset_name=workload_info.workload_name,
+                        )
+                        print(f"[REMEDIATION] rollout restart statefulset: {'OK' if rem_success else 'FAILED'} — {rem_output}")
+                    elif workload_info and workload_info.recommended_action == "rollout_restart_daemonset":
+                        print(f"[OWNER] Pod pertence ao DaemonSet '{workload_info.workload_name}'. Executando rollout restart.")
+                        rem_success, rem_output = active_remediator.rollout_restart_daemonset(
+                            namespace=namespace,
+                            daemonset_name=workload_info.workload_name,
+                        )
+                        print(f"[REMEDIATION] rollout restart daemonset: {'OK' if rem_success else 'FAILED'} — {rem_output}")
+                    elif workload_info and workload_info.recommended_action == "rollout_restart_deployment":
+                        print(f"[OWNER] Pod pertence ao deployment '{workload_info.workload_name}'. Preferindo rollout restart.")
+                        rem_success, rem_output = active_remediator.rollout_restart_deployment(
+                            namespace=namespace,
+                            deployment_name=workload_info.workload_name,
+                        )
+                        print(f"[REMEDIATION] rollout restart: {'OK' if rem_success else 'FAILED'} — {rem_output}")
+                    else:
+                        rem_success, rem_output = active_remediator.delete_pod(
+                            namespace=namespace,
+                            pod_name=pod_name,
+                        )
+                        print(f"[REMEDIATION] delete pod: {'OK' if rem_success else 'FAILED'} — {rem_output}")
+
+                    _section("AUTO-REMEDIATION OUTPUT")
+                    print(rem_output)
+
+                    summary["remediation_executed"] = True
+                    summary["remediation_success"] = rem_success
+
+                    if rem_success:
+                        summary["final_outcome"] = "Follow-up collected and auto-remediation applied successfully."
+                    else:
+                        summary["final_outcome"] = "Follow-up collected, but auto-remediation failed."
+                else:
+                    summary["remediation_action"] = "delete_pod"
+                    summary["remediation_executed"] = False
+                    summary["remediation_success"] = False
+                    summary["final_outcome"] = "Auto-remediation was blocked by guard."
+                    print("\n[-] Auto-remediation blocked by guard.")
         else:
             if follow_up_result["executed"]:
                 summary["final_outcome"] = "Diagnostic follow-up executed. No remediation applied."

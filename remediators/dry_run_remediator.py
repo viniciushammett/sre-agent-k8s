@@ -48,6 +48,18 @@ class DryRunRemediator:
             f"[DRY-RUN] rollout restart deployment '{deployment_name}' in namespace '{namespace}' — simulado, não executado.",
         )
 
+    def rollout_restart_statefulset(self, namespace: str, statefulset_name: str):
+        return (
+            True,
+            f"[DRY-RUN] rollout restart statefulset '{statefulset_name}' in namespace '{namespace}' — simulado, não executado.",
+        )
+
+    def rollout_restart_daemonset(self, namespace: str, daemonset_name: str):
+        return (
+            True,
+            f"[DRY-RUN] rollout restart daemonset '{daemonset_name}' in namespace '{namespace}' — simulado, não executado.",
+        )
+
     def __getattr__(self, name):
         """
         Delega qualquer método não definido aqui para o remediator real.
