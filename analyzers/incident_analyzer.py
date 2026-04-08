@@ -184,6 +184,27 @@ def suggest_remediation(incident: str) -> Dict[str, Any]:
             "reason": f"User requested restart for pod {pod_name}. Namespace will be inferred from session context.",
         }
 
+    match = re.search(
+        r"rollout\s+restart\s+deployment\s+([a-z0-9-]+)\s+in\s+(?:namespace\s+)?([a-z0-9-]+)",
+        text,
+    )
+    if match:
+        deployment_name, namespace = match.group(1), match.group(2)
+        return {
+            "action": "rollout_restart_deployment",
+            "params": {"deployment_name": deployment_name, "namespace": namespace},
+            "reason": f"User requested rollout restart for deployment {deployment_name} in namespace {namespace}.",
+        }
+
+    match = re.search(r"^rollout\s+restart\s+deployment\s+([a-z0-9-]+)$", text)
+    if match:
+        deployment_name = match.group(1)
+        return {
+            "action": "rollout_restart_deployment",
+            "params": {"deployment_name": deployment_name},
+            "reason": f"User requested rollout restart for deployment {deployment_name}. Namespace will be inferred from session context.",
+        }
+
     return {
         "action": None,
         "params": {},
@@ -217,6 +238,7 @@ _REQUEST_ACTIONS = {
     "get_pod_logs",
     "get_pod_previous_logs",
     "get_pod_node",
+    "rollout_restart_deployment",
 }
 
 

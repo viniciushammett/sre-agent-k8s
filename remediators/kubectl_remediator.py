@@ -266,3 +266,77 @@ def list_all_pods() -> Tuple[bool, str]:
         return False, exc.stderr.strip() or str(exc)
     except Exception as exc:
         return False, str(exc)
+
+
+def get_pod_owner(namespace: str, pod_name: str) -> dict:
+    """
+    Resolve o owner do pod via ownerReferences.
+    Retorna dict com 'kind', 'name' e 'deployment_name' (se aplicável).
+    Retorna dict vazio se owner não encontrado ou erro.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "kubectl", "get", "pod", pod_name, "-n", namespace,
+                "-o", "jsonpath={.metadata.ownerReferences[0].kind}|{.metadata.ownerReferences[0].name}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return {}
+
+        parts = result.stdout.strip().split("|")
+        if len(parts) != 2:
+            return {}
+
+        kind, name = parts[0].strip(), parts[1].strip()
+
+        # Se owner é ReplicaSet, resolve o Deployment acima
+        deployment_name = None
+        if kind == "ReplicaSet":
+            rs_result = subprocess.run(
+                [
+                    "kubectl", "get", "replicaset", name, "-n", namespace,
+                    "-o", "jsonpath={.metadata.ownerReferences[0].kind}|{.metadata.ownerReferences[0].name}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if rs_result.returncode == 0 and rs_result.stdout.strip():
+                rs_parts = rs_result.stdout.strip().split("|")
+                if len(rs_parts) == 2 and rs_parts[0].strip() == "Deployment":
+                    deployment_name = rs_parts[1].strip()
+
+        return {
+            "kind": kind,
+            "name": name,
+            "deployment_name": deployment_name,
+        }
+
+    except Exception:
+        return {}
+
+
+def rollout_restart_deployment(namespace: str, deployment_name: str) -> Tuple[bool, str]:
+    """
+    Executa rollout restart em um deployment.
+    Mais seguro que delete pod quando o pod pertence a um deployment.
+    """
+    try:
+        result = subprocess.run(
+            ["kubectl", "rollout", "restart", "deployment", deployment_name, "-n", namespace],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            return True, result.stdout.strip() or f"deployment.apps/{deployment_name} restarted"
+        else:
+            return False, result.stderr.strip()
+    except subprocess.TimeoutExpired:
+        return False, f"Timeout ao executar rollout restart no deployment {deployment_name}"
+    except Exception as e:
+        return False, str(e)

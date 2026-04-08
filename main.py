@@ -9,6 +9,7 @@ from remediators.kubectl_remediator import (
     describe_service,
     get_pod_logs,
     get_pod_node,
+    get_pod_owner,
     get_pod_previous_logs,
     get_pod_status,
     list_all_pods,
@@ -18,7 +19,9 @@ from remediators.kubectl_remediator import (
     list_pods,
     list_pods_wide,
     list_services,
+    rollout_restart_deployment,
 )
+from remediators.dry_run_remediator import DryRunRemediator
 from state_evaluator import evaluate_pod_state, PodStateEvaluation
 from remediation_guard import can_auto_remediate, register_remediation_attempt
 from log_analyzer import infer_probable_cause
@@ -27,6 +30,16 @@ from analyzers.diagnosis_engine import DiagnosisEngine
 
 AUTO_REMEDIATE = True
 AUTO_FOLLOW_UP = True
+
+
+class _KubectlFunctionsAdapter:
+    """Wraps module-level kubectl functions as methods for DryRunRemediator composition."""
+
+    def delete_pod(self, namespace: str, pod_name: str):
+        return delete_pod(namespace, pod_name)
+
+    def rollout_restart_deployment(self, namespace: str, deployment_name: str):
+        return rollout_restart_deployment(namespace, deployment_name)
 
 
 class _RemediatorAdapter:
@@ -52,7 +65,7 @@ _diagnosis_engine = DiagnosisEngine(_RemediatorAdapter())
 _REQUIRED_NAMESPACE_ACTIONS = {
     "list_pods", "list_pods_wide", "list_services", "list_deployments",
     "get_pod_logs", "get_pod_previous_logs", "describe_pod",
-    "get_pod_status", "delete_pod", "get_pod_node",
+    "get_pod_status", "delete_pod", "get_pod_node", "rollout_restart_deployment",
 }
 
 _REQUIRED_POD_ACTIONS = {
@@ -150,6 +163,9 @@ def execute_action(action: str, params: dict):
     if action == "get_pod_status":
         return get_pod_status(params["namespace"], params["pod_name"])
 
+    if action == "rollout_restart_deployment":
+        return rollout_restart_deployment(params["namespace"], params["deployment_name"])
+
     return False, f"Unsupported action: {action}"
 
 
@@ -235,8 +251,10 @@ def print_incident_summary(summary: dict):
     print(f"{'═' * 60}")
 
 
-def process_user_input(query: str, ctx: SessionContext | None = None):
+def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: bool = False):
     """Recebe a descrição do incidente e executa o pipeline completo."""
+    _real_remediator = _KubectlFunctionsAdapter()
+    active_remediator = DryRunRemediator(_real_remediator) if dry_run else _real_remediator
     print("=" * 60)
     print("SRE AGENT :: HTTP + SSH + K8s + Incident Analysis")
     print("=" * 60)
@@ -271,7 +289,13 @@ def process_user_input(query: str, ctx: SessionContext | None = None):
                     print("[ERROR] Pod não especificado e não encontrado no contexto.")
                     print("        Use: set namespace <nome> e inclua o nome do pod no comando.")
                     return
-        success, output = execute_action(analysis["action"], analysis["params"])
+        if analysis["action"] == "rollout_restart_deployment":
+            success, output = active_remediator.rollout_restart_deployment(
+                namespace=analysis["params"]["namespace"],
+                deployment_name=analysis["params"]["deployment_name"],
+            )
+        else:
+            success, output = execute_action(analysis["action"], analysis["params"])
         print()
         if success:
             print(output)
@@ -456,7 +480,23 @@ def process_user_input(query: str, ctx: SessionContext | None = None):
 
             if allowed:
                 register_remediation_attempt(namespace, pod_name, "delete_pod")
-                rem_success, rem_output = execute_action("delete_pod", params)
+
+                owner = get_pod_owner(namespace=namespace, pod_name=pod_name)
+                deployment_name = owner.get("deployment_name")
+
+                if deployment_name:
+                    print(f"[OWNER] Pod pertence ao deployment '{deployment_name}'. Preferindo rollout restart.")
+                    rem_success, rem_output = active_remediator.rollout_restart_deployment(
+                        namespace=namespace,
+                        deployment_name=deployment_name,
+                    )
+                    print(f"[REMEDIATION] rollout restart: {'OK' if rem_success else 'FAILED'} — {rem_output}")
+                else:
+                    rem_success, rem_output = active_remediator.delete_pod(
+                        namespace=namespace,
+                        pod_name=pod_name,
+                    )
+                    print(f"[REMEDIATION] delete pod: {'OK' if rem_success else 'FAILED'} — {rem_output}")
 
                 _section("AUTO-REMEDIATION OUTPUT")
                 print(rem_output)
@@ -526,10 +566,12 @@ def print_help():
     print(f"{'─' * 60}")
 
 
-def run_interactive_mode():
+def run_interactive_mode(dry_run: bool = False):
     """Inicia o loop REPL interativo do agente."""
     ctx = SessionContext()
     history = []
+    if dry_run:
+        print("[DRY-RUN] Modo simulação ativo — nenhuma ação destrutiva será executada.")
     print("SRE Agent started.")
     print("Type your request or 'exit' to quit.\n")
 
@@ -592,20 +634,26 @@ def run_interactive_mode():
             print("[SESSION] contexto limpo")
             continue
 
-        process_user_input(query, ctx)
+        process_user_input(query, ctx, dry_run=dry_run)
 
 
-def run_single_command_mode(query: str):
+def run_single_command_mode(query: str, dry_run: bool = False):
     """Executa o agente uma única vez com a query fornecida via argumento."""
-    process_user_input(query)
+    if dry_run:
+        print("[DRY-RUN] Modo simulação ativo — nenhuma ação destrutiva será executada.")
+    process_user_input(query, dry_run=dry_run)
 
 
 def main():
-    if len(sys.argv) > 1:
-        query = " ".join(sys.argv[1:])
-        run_single_command_mode(query)
+    args = sys.argv[1:]
+    dry_run = "--dry-run" in args
+    query_args = [a for a in args if a != "--dry-run"]
+    query = " ".join(query_args).strip() if query_args else None
+
+    if query:
+        run_single_command_mode(query, dry_run=dry_run)
     else:
-        run_interactive_mode()
+        run_interactive_mode(dry_run=dry_run)
 
 
 if __name__ == "__main__":
