@@ -1,5 +1,7 @@
 import json
+import re
 import sys
+import uuid
 
 from analyzers.incident_analyzer import classify_input, suggest_remediation
 from incident_logger import write_incident_summary
@@ -28,6 +30,7 @@ from log_analyzer import infer_probable_cause
 from cause_based_remediator import plan_next_steps
 from analyzers.diagnosis_engine import DiagnosisEngine
 from analyzers.workload_classifier import WorkloadClassifier, NO_RESTART
+from reporters.incident_reporter import IncidentReporter, IncidentReport
 
 AUTO_REMEDIATE = True
 AUTO_FOLLOW_UP = True
@@ -260,7 +263,7 @@ def print_incident_summary(summary: dict):
     print(f"{'═' * 60}")
 
 
-def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: bool = False):
+def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: bool = False, reporter: IncidentReporter = None):
     """Recebe a descrição do incidente e executa o pipeline completo."""
     _real_remediator = _KubectlFunctionsAdapter()
     active_remediator = DryRunRemediator(_real_remediator) if dry_run else _real_remediator
@@ -373,6 +376,9 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
     _section("ACTION OUTPUT")
     print(output)
 
+    workload_info = None
+    diagnosis_report = None
+
     if action == "get_pod_status" and success:
         status_data = parse_status_output(output)
 
@@ -409,7 +415,6 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
         print(f"Suggested follow-up params: {state_result['suggested_follow_up_params']}")
 
         # classificar workload antes de remediar
-        workload_info = None
         if params.get("pod_name") and params.get("namespace"):
             workload_classifier = WorkloadClassifier(active_remediator)
             workload_info = workload_classifier.classify(
@@ -588,6 +593,39 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
     print_incident_summary(summary)
     write_incident_summary(summary)
 
+    if reporter:
+        report = reporter.build(
+            user_input=query,
+            namespace=params.get("namespace", ""),
+            pod_name=params.get("pod_name", ""),
+            input_type="incident",
+            action=analysis.get("action", ""),
+            action_success=summary.get("initial_action_success", False),
+            detected_state=summary.get("detected_state"),
+            health_status=summary.get("health_status"),
+            container_name=summary.get("container_name"),
+            restart_count=summary.get("restart_count"),
+            workload_type=workload_info.workload_type if workload_info else None,
+            workload_name=workload_info.workload_name if workload_info else None,
+            action_target=workload_info.action_target if workload_info else None,
+            cause_category=diagnosis_report.cause_category if diagnosis_report else None,
+            hypothesis=diagnosis_report.hypothesis if diagnosis_report else None,
+            diagnosis_confidence=diagnosis_report.confidence if diagnosis_report else None,
+            follow_up_action=summary.get("follow_up_action"),
+            follow_up_executed=summary.get("follow_up_executed", False),
+            remediation_action=summary.get("remediation_action"),
+            remediation_executed=summary.get("remediation_executed", False),
+            remediation_success=summary.get("remediation_success"),
+            probable_cause=summary.get("probable_cause"),
+            matched_pattern=summary.get("matched_pattern"),
+            confidence=summary.get("confidence"),
+            requires_human_review=summary.get("requires_human_review"),
+            final_outcome=summary.get("final_outcome", ""),
+            dry_run=dry_run,
+        )
+        if summary.get("health_status") != "healthy":
+            reporter.save(report)
+
 
 def print_help():
     """Exibe os comandos disponíveis do agente."""
@@ -622,6 +660,11 @@ def print_help():
     show context          → exibe contexto atual
     clear context         → limpa contexto da sessão
     history               → exibe histórico de comandos
+
+  INCIDENTS
+    incidents             → lista incidents da sessão atual
+    incidents last <N>    → lista os últimos N incidents da sessão
+    incidents all         → lista todos os incidents (todas as sessões)
 """)
     print(f"{'─' * 60}")
 
@@ -630,6 +673,9 @@ def run_interactive_mode(dry_run: bool = False):
     """Inicia o loop REPL interativo do agente."""
     ctx = SessionContext()
     history = []
+    session_id = str(uuid.uuid4())[:8]
+    reporter = IncidentReporter(session_id=session_id)
+    print(f"[SESSION ID] {session_id}")
     if dry_run:
         print("[DRY-RUN] Modo simulação ativo — nenhuma ação destrutiva será executada.")
     print("SRE Agent started.")
@@ -694,14 +740,64 @@ def run_interactive_mode(dry_run: bool = False):
             print("[SESSION] contexto limpo")
             continue
 
-        process_user_input(query, ctx, dry_run=dry_run)
+        if query.lower().strip() == "incidents all":
+            all_reports = reporter.load_all()
+            if not all_reports:
+                print("[INCIDENTS] Nenhum incident registrado.")
+            else:
+                print(f"\n{'─' * 60}")
+                print(f"  INCIDENTS — todos ({len(all_reports)} registros)")
+                print(f"{'─' * 60}")
+                for r in all_reports:
+                    state = r.detected_state or "—"
+                    health = r.health_status or "—"
+                    outcome = r.final_outcome[:50] if r.final_outcome else "—"
+                    dr = " [DRY-RUN]" if r.dry_run else ""
+                    session = f"[{r.session_id}]" if r.session_id else ""
+                    print(f"  {r.incident_id} {session}{dr}")
+                    print(f"    input:   {r.user_input[:60]}")
+                    print(f"    state:   {state} | health: {health}")
+                    print(f"    outcome: {outcome}")
+                    print()
+                print(f"{'─' * 60}")
+            continue
+
+        _incidents_match = re.match(r"^incidents(?:\s+last\s+(\d+))?$", query.lower().strip())
+        if _incidents_match:
+            n = int(_incidents_match.group(1)) if _incidents_match.group(1) else None
+            session_reports = reporter.load_session()
+            if n:
+                session_reports = session_reports[-n:]
+            if not session_reports:
+                print("[INCIDENTS] Nenhum incident registrado nesta sessão.")
+            else:
+                print(f"\n{'─' * 60}")
+                print(f"  INCIDENTS — sessão {reporter.session_id} ({len(session_reports)} registros)")
+                print(f"{'─' * 60}")
+                for r in session_reports:
+                    state = r.detected_state or "—"
+                    health = r.health_status or "—"
+                    outcome = r.final_outcome[:50] if r.final_outcome else "—"
+                    dr = " [DRY-RUN]" if r.dry_run else ""
+                    print(f"  {r.incident_id}{dr}")
+                    print(f"    input:   {r.user_input[:60]}")
+                    print(f"    state:   {state} | health: {health}")
+                    print(f"    outcome: {outcome}")
+                    print()
+                print(f"{'─' * 60}")
+            continue
+
+        process_user_input(query, ctx, dry_run=dry_run, reporter=reporter)
 
 
 def run_single_command_mode(query: str, dry_run: bool = False):
     """Executa o agente uma única vez com a query fornecida via argumento."""
+    session_id = str(uuid.uuid4())[:8]
+    reporter = IncidentReporter(session_id=session_id)
+    print(f"[SESSION ID] {session_id}")
     if dry_run:
         print("[DRY-RUN] Modo simulação ativo — nenhuma ação destrutiva será executada.")
-    process_user_input(query, dry_run=dry_run)
+    process_user_input(query, dry_run=dry_run, reporter=reporter)
 
 
 def main():
