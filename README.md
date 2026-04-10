@@ -10,10 +10,10 @@ A lightweight SRE Agent designed to analyze incidents described in natural langu
 
 This project simulates real-world SRE workflows by combining:
 
-- Incident analysis (NLP via rules)  
-- Kubernetes operations  
-- Automated remediation  
-- Deterministic diagnostics and root cause hints  
+- Incident analysis (NLP via rules)
+- Kubernetes operations
+- Automated remediation
+- Deterministic diagnostics and root cause hints
 
 ---
 
@@ -22,28 +22,33 @@ This project simulates real-world SRE workflows by combining:
 The agent can interpret human-like commands and execute actions such as:
 
 ### 🔎 Observability
-- List pods
-- List pods (wide)
-- List services
-- List deployments
+- List pods / wide / services / deployments
+- List namespaces / nodes / all pods (cluster-wide)
 
 ### 🔬 Troubleshooting
 - Get pod status (structured JSON)
-- Describe pod
-- Describe service
+- Describe pod / service
 - Get pod logs (container-aware)
 - Get pod previous logs (CrashLoopBackOff)
 - Get pod node
 
 ### 🛠️ Remediation
-- Restart pods (via delete)
+- Restart pods via delete (standalone pods)
+- Rollout restart deployments (preferred when pod has a deployment owner)
+- Rollout restart StatefulSets (with impact warning)
+- Rollout restart DaemonSets (with cluster-wide impact warning)
 - Detect CrashLoopBackOff and act automatically
 - Guarded auto-remediation (limit per workload)
 
 ### 🧠 Intelligent Diagnostics (Deterministic)
 - Detect pod health state (healthy / unhealthy / unknown)
-- Suggest follow-up actions automatically
-- Execute diagnostic follow-up before remediation
+- Guided diagnosis by workload state:
+  - CrashLoopBackOff — previous logs + restart count
+  - OOMKilled — memory limits extraction
+  - ImagePullBackOff / ErrImagePull — registry and image info
+  - Pending — scheduling constraints, taints, PVC
+  - CreateContainerConfigError — secret / configmap / volume detection
+  - Running unhealthy — liveness / readiness probe analysis
 - Infer probable cause from logs using heuristics:
   - Connection issues
   - Permission errors
@@ -52,9 +57,15 @@ The agent can interpret human-like commands and execute actions such as:
   - Architecture mismatch
   - Memory issues
 
+### 🗂️ Workload-Aware Actions
+- Resolve full ownerReference chain: Pod → ReplicaSet → Deployment / StatefulSet / DaemonSet / Job → CronJob
+- Apply workload-specific remediation rules
+- Block restart for Job and CronJob with actionable guidance
+
 ### 🖥️ Interactive CLI
 - REPL mode with persistent session context
 - Single-command mode for scripting
+- Dry-run mode (`--dry-run`) — simulate destructive actions safely
 - Command history in memory
 - Built-in help reference
 
@@ -64,35 +75,48 @@ The agent can interpret human-like commands and execute actions such as:
 - Dynamic prompt: `sre-agent [namespace]>`
 - Short commands without repeating namespace/pod
 
+### 📊 Incident Reporting
+- Structured JSONL export (`incident_history.jsonl`) — append-only
+- Only unhealthy incidents are persisted — healthy pods are not incidents
+- Session ID per session displayed in header
+- Query commands: `incidents`, `incidents last N`, `incidents all`
+
 ---
 
 ## ⚙️ How it works
 
-1. User describes an incident in natural language  
-2. The analyzer parses the request  
-3. The agent maps it to an action  
-4. The remediator executes a `kubectl` command  
-5. The state evaluator determines health and next steps  
-6. The agent executes diagnostic follow-up (if applicable)  
-7. The log analyzer infers the probable cause from log output  
-8. The cause-based remediator produces a deterministic action plan  
-9. The agent applies auto-remediation (if needed and allowed by safety gates)  
-10. A structured incident summary is generated and stored  
+1. User describes an incident in natural language
+2. The analyzer parses the request and classifies it (request vs incident)
+3. The agent maps it to an action
+4. The remediator executes a `kubectl` command
+5. The state evaluator determines health and next steps
+6. The WorkloadClassifier resolves the pod's owner chain
+7. The agent executes diagnostic follow-up (if applicable)
+8. The DiagnosisEngine investigates the workload state
+9. The log analyzer infers the probable cause from log output
+10. The cause-based remediator produces a deterministic action plan
+11. The agent applies auto-remediation (if needed and allowed by safety gates)
+12. A structured incident summary is generated, displayed and stored
 
 ---
 
 ## 🧩 Architecture
 
-User Input  
-→ Analyzer  
-→ Action Mapping  
-→ Remediator (kubectl)  
-→ State Evaluator  
-→ Follow-up Engine  
-→ Log Analyzer  
-→ Cause-Based Remediator  
-→ Remediation Guard  
-→ Incident Logger  
+```
+User Input
+→ Incident Analyzer (NLP / regex)
+→ Action Mapping
+→ Remediator (kubectl)
+→ State Evaluator
+→ WorkloadClassifier (owner resolution)
+→ Follow-up Engine
+→ DiagnosisEngine (guided investigation)
+→ Log Analyzer
+→ Cause-Based Remediator
+→ Remediation Guard
+→ Incident Reporter (JSONL)
+→ Incident Logger
+```
 
 ---
 
@@ -114,76 +138,57 @@ source venv/bin/activate
 python main.py
 ```
 
-**Single command mode**:
+**Single command mode:**
 ```bash
 source venv/bin/activate
 python main.py "list pods in namespace sre-demo"
 ```
+
+**Dry-run mode** (simulate destructive actions):
+```bash
+source venv/bin/activate
+python main.py --dry-run
+python main.py --dry-run "check pod demo-nginx-xxx in namespace sre-demo"
+```
+
+### Exit codes (single command mode)
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | kubectl error |
+| 2 | Invalid input |
+| 3 | Timeout |
+| 99 | Unexpected error |
+
+---
+
 ## 🧪 Example commands
 
 ### 1. Cluster-wide (no namespace required)
 
-*List all namespaces:*
 ```bash
 list namespaces
-```
-
-*List all nodes:*
-```bash
 list nodes
-```
-
-*List all pods across all namespaces:*
-```bash
 list all pods
 ```
 
 ### 2. Namespace operations (explicit namespace)
 
-*List pods in a namespace:*
 ```bash
 list pods in namespace sre-demo
-```
-
-*List pods wide:*
-```bash
 list pods wide in namespace sre-demo
-```
-
-*List services:*
-```bash
 list services in namespace sre-demo
-```
-
-*List deployments:*
-```bash
 list deployments in namespace sre-demo
-```
-
-*Get pod node:*
-```bash
 which node is pod demo-nginx-xxx running on in namespace sre-demo
-```
-
-*Describe service:*
-```bash
 describe service demo-nginx in namespace sre-demo
-```
-
-*Restart pod (CrashLoop):*
-```bash
-pod demo-nginx-xxx is in CrashLoopBackOff in namespace sre-demo, please restart pod
+rollout restart deployment demo-nginx in namespace sre-demo
 ```
 
 ### 3. Session context — set namespace, then use short commands
 
-*Set active namespace once:*
 ```bash
 set namespace sre-demo
-```
-
-*From here on, namespace is inferred automatically:*
-```bash
 list pods
 list services
 list deployments
@@ -191,116 +196,98 @@ list deployments
 
 ### 4. Troubleshooting with active context
 
-*Check pod status (full diagnostic + remediation pipeline):*
 ```bash
 check pod demo-nginx-xxx
-```
-
-*Describe pod:*
-```bash
 describe pod demo-nginx-xxx
-```
-
-*Get logs:*
-```bash
 logs
-```
-
-*Get previous logs (CrashLoopBackOff):*
-```bash
 show previous logs
-```
-
-*Restart pod:*
-```bash
 restart pod demo-nginx-xxx
+rollout restart deployment demo-nginx
 ```
 
 ### 5. Inspect / history / help
 
-*Show active session context:*
 ```bash
 show context
-```
-
-*Clear session context:*
-```bash
 clear context
-```
-
-*Show command history:*
-```bash
 history
+help
 ```
 
-*Show all available commands:*
+### 6. Incident reporting
+
 ```bash
-help
+incidents                  # current session incidents
+incidents last 5           # last 5 incidents of session
+incidents all              # all incidents across sessions
 ```
 
 ---
 
 ## ⚠️ Important Notes
 
-- This agent uses rule-based NLP (regex), not LLMs  
+- This agent uses rule-based NLP (regex), not LLMs
 - Designed for local or controlled environments
-- All decisions are deterministic and explainable 
+- All decisions are deterministic and explainable
+- Dry-run mode simulates all destructive actions safely
 
 ---
 
-## 📊 Incident Summary (New)
+## 📊 Incident Summary
 
 After execution, the agent generates a structured summary:
 
-- Detected state  
-- Health status  
-- Container name  
-- Restart count  
-- Follow-up executed  
-- Probable cause  
-- Confidence  
-- Matched pattern  
-- Cause-based plan applied  
-- Recommended checks  
-- Requires human review  
-- Safe remediation selected  
-- Cause explanation  
-- Remediation applied  
-- Final outcome  
+- Detected state
+- Health status
+- Workload type and owner
+- Container name / restart count
+- Diagnosis: cause category, hypothesis, evidence, confidence
+- Follow-up executed
+- Probable cause / matched pattern
+- Cause-based plan applied
+- Recommended checks
+- Requires human review
+- Remediation applied
+- Final outcome
 
-Additionally, all incidents are stored in:
+Incidents are stored in two formats:
 
 ```bash
-incident_history.log
+incident_history.log    # human-readable log
+incident_history.jsonl  # structured JSONL (unhealthy incidents only)
 ```
+
 ---
 
 ## 🔒 Safety & Control
 
-- Auto-remediation is protected by multiple safety gates:
-  - Max 2 remediations per workload (remediation guard)  
-  - Blocked if `requires_human_review` is true for the matched cause  
-  - Blocked if log analysis confidence is `low`  
-  - Blocked if no safe remediation is defined for the pattern  
+Auto-remediation is protected by multiple safety gates:
+- Max 2 remediations per workload (remediation guard)
+- Blocked if `requires_human_review` is true for the matched cause
+- Blocked if log analysis confidence is `low`
+- Blocked if no safe remediation is defined for the pattern
+- Job and CronJob workloads are always blocked — restart doesn't apply
+- Dry-run mode simulates all destructive actions without executing kubectl
 
-- All remediation actions are logged:
+All remediation actions are logged:
 
 ```bash
 remediation.log
 ```
+
 ---
 
 ## 💡 Why this project?
 
 Most modern AI agents rely on external LLMs (Claude, GPT, etc.), which introduces:
 
-- 💰 Token costs  
-- 🔐 Security concerns  
-- 🌐 External dependencies  
+- 💰 Token costs
+- 🔐 Security concerns
+- 🌐 External dependencies
 
 This project explores an alternative:
 
--  Local, deterministic, low-cost SRE automation
--  Full control over execution
--  Explainable decision-making
--  No external APIs or token usage
+- Local, deterministic, low-cost SRE automation
+- Full control over execution
+- Explainable decision-making
+- No external APIs or token usage
