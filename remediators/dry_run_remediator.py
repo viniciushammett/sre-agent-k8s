@@ -1,6 +1,16 @@
 """
-DryRunRemediator — wrapper que simula ações destrutivas sem executar kubectl.
-Chamadas de leitura são delegadas ao remediator real.
+DryRunRemediator — wrapper sobre KubectlRemediator para modo dry-run.
+
+Ações destrutivas são simuladas e retornam mensagem [DRY-RUN].
+Ações de leitura são delegadas ao remediator real via __getattr__.
+
+Ações interceptadas (simuladas):
+    delete_pod
+    rollout_restart_deployment
+    rollout_restart_statefulset
+    rollout_restart_daemonset
+
+Todas as demais ações delegam automaticamente ao remediator real.
 """
 
 DESTRUCTIVE_ACTIONS = {

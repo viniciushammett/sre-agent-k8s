@@ -1,6 +1,20 @@
 """
-WorkloadClassifier — resolve owner completo de um pod e classifica
-o tipo de workload Kubernetes para orientar ações no nível correto.
+Workload Classifier — resolve owner completo de um pod e classifica workload.
+
+Resolve a cadeia de ownerReferences:
+    Pod → ReplicaSet → Deployment
+    Pod → StatefulSet
+    Pod → DaemonSet
+    Pod → Job → CronJob
+    Pod → (sem owner) → standalone
+
+Regras de remediação por tipo:
+    Deployment   — rollout restart seguro
+    StatefulSet  — rollout restart com aviso de impacto em PVC
+    DaemonSet    — rollout restart com aviso (afeta todos os nodes)
+    Job          — bloqueado (NO_RESTART) — orientar análise
+    CronJob      — bloqueado (NO_RESTART) — orientar análise
+    standalone   — delete pod direto
 """
 from dataclasses import dataclass, field
 from typing import Optional

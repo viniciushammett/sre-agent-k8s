@@ -2,6 +2,10 @@ import json
 import subprocess
 from typing import Optional, Tuple
 
+TIMEOUT_READ = 15      # operações de leitura (get, describe, logs)
+TIMEOUT_WRITE = 30     # operações de escrita (delete, rollout restart)
+TIMEOUT_LOGS = 20      # logs podem demorar mais
+
 
 def delete_pod(namespace: str, pod_name: str) -> Tuple[bool, str]:
     try:
@@ -9,12 +13,14 @@ def delete_pod(namespace: str, pod_name: str) -> Tuple[bool, str]:
             ["kubectl", "delete", "pod", pod_name, "-n", namespace],
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=TIMEOUT_WRITE,
             check=True,
         )
         return True, result.stdout.strip()
     except subprocess.CalledProcessError as exc:
         return False, exc.stderr.strip() or str(exc)
+    except subprocess.TimeoutExpired:
+        return False, f"Timeout ({TIMEOUT_WRITE}s) ao executar kubectl delete pod {pod_name}"
     except Exception as exc:
         return False, str(exc)
 
@@ -25,12 +31,14 @@ def list_pods(namespace: str) -> Tuple[bool, str]:
             ["kubectl", "get", "pods", "-n", namespace],
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=TIMEOUT_READ,
             check=True,
         )
         return True, result.stdout.strip()
     except subprocess.CalledProcessError as exc:
         return False, exc.stderr.strip() or str(exc)
+    except subprocess.TimeoutExpired:
+        return False, f"Timeout ({TIMEOUT_READ}s) ao executar kubectl get pods"
     except Exception as exc:
         return False, str(exc)
 
@@ -41,12 +49,14 @@ def list_pods_wide(namespace: str) -> Tuple[bool, str]:
             ["kubectl", "get", "pods", "-o", "wide", "-n", namespace],
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=TIMEOUT_READ,
             check=True,
         )
         return True, result.stdout.strip()
     except subprocess.CalledProcessError as exc:
         return False, exc.stderr.strip() or str(exc)
+    except subprocess.TimeoutExpired:
+        return False, f"Timeout ({TIMEOUT_READ}s) ao executar kubectl get pods -o wide"
     except Exception as exc:
         return False, str(exc)
 
@@ -57,12 +67,14 @@ def list_services(namespace: str) -> Tuple[bool, str]:
             ["kubectl", "get", "svc", "-n", namespace],
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=TIMEOUT_READ,
             check=True,
         )
         return True, result.stdout.strip()
     except subprocess.CalledProcessError as exc:
         return False, exc.stderr.strip() or str(exc)
+    except subprocess.TimeoutExpired:
+        return False, f"Timeout ({TIMEOUT_READ}s) ao executar kubectl get svc"
     except Exception as exc:
         return False, str(exc)
 
@@ -73,12 +85,14 @@ def list_deployments(namespace: str) -> Tuple[bool, str]:
             ["kubectl", "get", "deployments", "-n", namespace],
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=TIMEOUT_READ,
             check=True,
         )
         return True, result.stdout.strip()
     except subprocess.CalledProcessError as exc:
         return False, exc.stderr.strip() or str(exc)
+    except subprocess.TimeoutExpired:
+        return False, f"Timeout ({TIMEOUT_READ}s) ao executar kubectl get deployments"
     except Exception as exc:
         return False, str(exc)
 
@@ -89,12 +103,14 @@ def describe_pod(namespace: str, pod_name: str) -> Tuple[bool, str]:
             ["kubectl", "describe", "pod", pod_name, "-n", namespace],
             capture_output=True,
             text=True,
-            timeout=20,
+            timeout=TIMEOUT_READ,
             check=True,
         )
         return True, result.stdout.strip()
     except subprocess.CalledProcessError as exc:
         return False, exc.stderr.strip() or str(exc)
+    except subprocess.TimeoutExpired:
+        return False, f"Timeout ({TIMEOUT_READ}s) ao executar kubectl describe pod {pod_name}"
     except Exception as exc:
         return False, str(exc)
 
@@ -105,12 +121,14 @@ def describe_service(namespace: str, service_name: str) -> Tuple[bool, str]:
             ["kubectl", "describe", "svc", service_name, "-n", namespace],
             capture_output=True,
             text=True,
-            timeout=20,
+            timeout=TIMEOUT_READ,
             check=True,
         )
         return True, result.stdout.strip()
     except subprocess.CalledProcessError as exc:
         return False, exc.stderr.strip() or str(exc)
+    except subprocess.TimeoutExpired:
+        return False, f"Timeout ({TIMEOUT_READ}s) ao executar kubectl describe svc {service_name}"
     except Exception as exc:
         return False, str(exc)
 
@@ -125,12 +143,14 @@ def get_pod_logs(namespace: str, pod_name: str, container_name: Optional[str] = 
             cmd,
             capture_output=True,
             text=True,
-            timeout=20,
+            timeout=TIMEOUT_LOGS,
             check=True,
         )
         return True, result.stdout.strip()
     except subprocess.CalledProcessError as exc:
         return False, exc.stderr.strip() or str(exc)
+    except subprocess.TimeoutExpired:
+        return False, f"Timeout ({TIMEOUT_LOGS}s) ao executar kubectl logs {pod_name}"
     except Exception as exc:
         return False, str(exc)
 
@@ -145,12 +165,14 @@ def get_pod_previous_logs(namespace: str, pod_name: str, container_name: Optiona
             cmd,
             capture_output=True,
             text=True,
-            timeout=20,
+            timeout=TIMEOUT_LOGS,
             check=True,
         )
         return True, result.stdout.strip()
     except subprocess.CalledProcessError as exc:
         return False, exc.stderr.strip() or str(exc)
+    except subprocess.TimeoutExpired:
+        return False, f"Timeout ({TIMEOUT_LOGS}s) ao executar kubectl logs --previous {pod_name}"
     except Exception as exc:
         return False, str(exc)
 
@@ -165,12 +187,14 @@ def get_pod_node(namespace: str, pod_name: str) -> Tuple[bool, str]:
             ],
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=TIMEOUT_READ,
             check=True,
         )
         return True, result.stdout.strip()
     except subprocess.CalledProcessError as exc:
         return False, exc.stderr.strip() or str(exc)
+    except subprocess.TimeoutExpired:
+        return False, f"Timeout ({TIMEOUT_READ}s) ao executar kubectl get pod {pod_name}"
     except Exception as exc:
         return False, str(exc)
 
@@ -181,7 +205,7 @@ def get_pod_status(namespace: str, pod_name: str) -> Tuple[bool, str]:
             ["kubectl", "get", "pod", pod_name, "-n", namespace, "-o", "json"],
             capture_output=True,
             text=True,
-            timeout=20,
+            timeout=TIMEOUT_READ,
             check=True,
         )
 
@@ -222,6 +246,8 @@ def get_pod_status(namespace: str, pod_name: str) -> Tuple[bool, str]:
         return True, json.dumps(output, indent=2)
     except subprocess.CalledProcessError as exc:
         return False, exc.stderr.strip() or str(exc)
+    except subprocess.TimeoutExpired:
+        return False, f"Timeout ({TIMEOUT_READ}s) ao executar kubectl get pod {pod_name}"
     except Exception as exc:
         return False, str(exc)
 
@@ -231,11 +257,13 @@ def list_namespaces() -> Tuple[bool, str]:
     try:
         result = subprocess.run(
             ["kubectl", "get", "namespaces"],
-            capture_output=True, text=True, timeout=15, check=True,
+            capture_output=True, text=True, timeout=TIMEOUT_READ, check=True,
         )
         return True, result.stdout.strip()
     except subprocess.CalledProcessError as exc:
         return False, exc.stderr.strip() or str(exc)
+    except subprocess.TimeoutExpired:
+        return False, f"Timeout ({TIMEOUT_READ}s) ao executar kubectl get namespaces"
     except Exception as exc:
         return False, str(exc)
 
@@ -245,11 +273,13 @@ def list_nodes() -> Tuple[bool, str]:
     try:
         result = subprocess.run(
             ["kubectl", "get", "nodes"],
-            capture_output=True, text=True, timeout=15, check=True,
+            capture_output=True, text=True, timeout=TIMEOUT_READ, check=True,
         )
         return True, result.stdout.strip()
     except subprocess.CalledProcessError as exc:
         return False, exc.stderr.strip() or str(exc)
+    except subprocess.TimeoutExpired:
+        return False, f"Timeout ({TIMEOUT_READ}s) ao executar kubectl get nodes"
     except Exception as exc:
         return False, str(exc)
 
@@ -259,11 +289,13 @@ def list_all_pods() -> Tuple[bool, str]:
     try:
         result = subprocess.run(
             ["kubectl", "get", "pods", "--all-namespaces"],
-            capture_output=True, text=True, timeout=15, check=True,
+            capture_output=True, text=True, timeout=TIMEOUT_READ, check=True,
         )
         return True, result.stdout.strip()
     except subprocess.CalledProcessError as exc:
         return False, exc.stderr.strip() or str(exc)
+    except subprocess.TimeoutExpired:
+        return False, f"Timeout ({TIMEOUT_READ}s) ao executar kubectl get pods --all-namespaces"
     except Exception as exc:
         return False, str(exc)
 
@@ -282,7 +314,7 @@ def get_pod_owner(namespace: str, pod_name: str) -> dict:
             ],
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=TIMEOUT_READ,
         )
         if result.returncode != 0 or not result.stdout.strip():
             return {}
@@ -303,7 +335,7 @@ def get_pod_owner(namespace: str, pod_name: str) -> dict:
                 ],
                 capture_output=True,
                 text=True,
-                timeout=15,
+                timeout=TIMEOUT_READ,
             )
             if rs_result.returncode == 0 and rs_result.stdout.strip():
                 rs_parts = rs_result.stdout.strip().split("|")
@@ -316,6 +348,8 @@ def get_pod_owner(namespace: str, pod_name: str) -> dict:
             "deployment_name": deployment_name,
         }
 
+    except subprocess.TimeoutExpired:
+        return {}
     except Exception:
         return {}
 
@@ -328,13 +362,13 @@ def rollout_restart_statefulset(namespace: str, statefulset_name: str) -> Tuple[
     try:
         result = subprocess.run(
             ["kubectl", "rollout", "restart", "statefulset", statefulset_name, "-n", namespace],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=TIMEOUT_WRITE,
         )
         if result.returncode == 0:
             return True, result.stdout.strip() or f"statefulset.apps/{statefulset_name} restarted"
         return False, result.stderr.strip()
     except subprocess.TimeoutExpired:
-        return False, f"Timeout ao executar rollout restart no statefulset {statefulset_name}"
+        return False, f"Timeout ({TIMEOUT_WRITE}s) ao executar rollout restart no statefulset {statefulset_name}"
     except Exception as e:
         return False, str(e)
 
@@ -347,13 +381,13 @@ def rollout_restart_daemonset(namespace: str, daemonset_name: str) -> Tuple[bool
     try:
         result = subprocess.run(
             ["kubectl", "rollout", "restart", "daemonset", daemonset_name, "-n", namespace],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=TIMEOUT_WRITE,
         )
         if result.returncode == 0:
             return True, result.stdout.strip() or f"daemonset.apps/{daemonset_name} restarted"
         return False, result.stderr.strip()
     except subprocess.TimeoutExpired:
-        return False, f"Timeout ao executar rollout restart no daemonset {daemonset_name}"
+        return False, f"Timeout ({TIMEOUT_WRITE}s) ao executar rollout restart no daemonset {daemonset_name}"
     except Exception as e:
         return False, str(e)
 
@@ -368,13 +402,13 @@ def rollout_restart_deployment(namespace: str, deployment_name: str) -> Tuple[bo
             ["kubectl", "rollout", "restart", "deployment", deployment_name, "-n", namespace],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=TIMEOUT_WRITE,
         )
         if result.returncode == 0:
             return True, result.stdout.strip() or f"deployment.apps/{deployment_name} restarted"
         else:
             return False, result.stderr.strip()
     except subprocess.TimeoutExpired:
-        return False, f"Timeout ao executar rollout restart no deployment {deployment_name}"
+        return False, f"Timeout ({TIMEOUT_WRITE}s) ao executar rollout restart no deployment {deployment_name}"
     except Exception as e:
         return False, str(e)

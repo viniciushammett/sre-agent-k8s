@@ -1,3 +1,19 @@
+"""
+SRE Agent Kubernetes — ponto de entrada principal.
+
+Modos de operação:
+    python main.py                    # modo interativo (REPL)
+    python main.py "comando"          # modo single command
+    python main.py --dry-run          # modo dry-run (simulação)
+    python main.py --dry-run "cmd"    # single command em dry-run
+
+Exit codes (modo single command):
+    0  — sucesso
+    1  — erro kubectl
+    2  — input inválido
+    3  — timeout
+    99 — erro inesperado
+"""
 import json
 import re
 import sys
@@ -34,6 +50,12 @@ from reporters.incident_reporter import IncidentReporter, IncidentReport
 
 AUTO_REMEDIATE = True
 AUTO_FOLLOW_UP = True
+
+EXIT_SUCCESS = 0
+EXIT_KUBECTL_ERROR = 1
+EXIT_INVALID_INPUT = 2
+EXIT_TIMEOUT = 3
+EXIT_UNEXPECTED = 99
 
 
 class _KubectlFunctionsAdapter:
@@ -287,7 +309,7 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
     if input_type == "request":
         if not analysis["action"]:
             print("\n[!] Unknown command. Try: list namespaces, list pods in namespace default, etc.")
-            return
+            return False
         if ctx:
             analysis["params"] = ctx.fill(analysis["params"])
         params_check = analysis["params"]
@@ -295,12 +317,12 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
             if not params_check.get("namespace"):
                 print("[ERROR] Namespace não especificado e não encontrado no contexto.")
                 print("        Use: set namespace <nome>  ou inclua 'in namespace <nome>' no comando.")
-                return
+                return False
             if analysis["action"] in _REQUIRED_POD_ACTIONS:
                 if not params_check.get("pod_name"):
                     print("[ERROR] Pod não especificado e não encontrado no contexto.")
                     print("        Use: set namespace <nome> e inclua o nome do pod no comando.")
-                    return
+                    return False
         if analysis["action"] == "rollout_restart_deployment":
             success, output = active_remediator.rollout_restart_deployment(
                 namespace=analysis["params"]["namespace"],
@@ -315,7 +337,7 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
                 ctx.update(analysis["params"])
         else:
             print(f"[ERROR] {output}")
-        return
+        return success
 
     summary = {
         "incident": incident,
@@ -355,18 +377,18 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
         if not params.get("namespace"):
             print("[ERROR] Namespace não especificado e não encontrado no contexto.")
             print("        Use: set namespace <nome>  ou inclua 'in namespace <nome>' no comando.")
-            return
+            return False
         if action in _REQUIRED_POD_ACTIONS:
             if not params.get("pod_name"):
                 print("[ERROR] Pod não especificado e não encontrado no contexto.")
                 print("        Use: set namespace <nome> e inclua o nome do pod no comando.")
-                return
+                return False
 
     if not action:
         print("\n[-] No remediation suggested for this incident.")
         print_incident_summary(summary)
         write_incident_summary(summary)
-        return
+        return True
 
     success, output = execute_action(action, params)
     summary["initial_action_success"] = success
@@ -387,7 +409,7 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
             summary["final_outcome"] = "Failed to parse pod status output."
             print_incident_summary(summary)
             write_incident_summary(summary)
-            return
+            return False
 
         parsed_status = status_data.get("parsed_status")
         container_name = status_data.get("container_name")
@@ -626,6 +648,8 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
         if summary.get("health_status") != "healthy":
             reporter.save(report)
 
+    return summary.get("initial_action_success", True)
+
 
 def print_help():
     """Exibe os comandos disponíveis do agente."""
@@ -797,7 +821,10 @@ def run_single_command_mode(query: str, dry_run: bool = False):
     print(f"[SESSION ID] {session_id}")
     if dry_run:
         print("[DRY-RUN] Modo simulação ativo — nenhuma ação destrutiva será executada.")
-    process_user_input(query, dry_run=dry_run, reporter=reporter)
+    action_success = process_user_input(query, dry_run=dry_run, reporter=reporter)
+    if not action_success:
+        sys.exit(EXIT_KUBECTL_ERROR)
+    sys.exit(EXIT_SUCCESS)
 
 
 def main():

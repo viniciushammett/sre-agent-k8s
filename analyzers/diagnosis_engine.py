@@ -1,3 +1,20 @@
+"""
+Diagnosis Engine — investigação guiada determinística por estado de workload.
+
+Fornece DiagnosisEngine com handlers específicos para cada estado:
+    CrashLoopBackOff        — previous logs + describe + restart count
+    OOMKilled               — previous logs + memory limits
+    ImagePullBackOff        — describe + image/registry info
+    ErrImagePull            — describe + image/registry info
+    Pending                 — describe + scheduling constraints
+    CreateContainerConfigError — describe + secret/configmap/volume
+    CreateContainerError    — describe + secret/configmap/volume
+    Running (unhealthy)     — logs + liveness/readiness probe info
+
+Categorias de causa padronizadas:
+    application_error, dependency_unavailable, configuration_error,
+    image_runtime_problem, scheduling_resource_problem, permission_security_problem
+"""
 from dataclasses import dataclass, field
 from typing import Optional
 

@@ -1,3 +1,14 @@
+"""
+Incident Analyzer — classifica input do usuário e extrai ação e parâmetros.
+
+Funções principais:
+    suggest_remediation(text) -> dict   — extrai action + params via regex NLP
+    classify_input(text) -> str         — classifica como 'request' ou 'incident'
+
+Regras de classificação:
+    request  — operações de leitura (list, describe, logs, get)
+    incident — operações de troubleshooting (check, crash, error, restart)
+"""
 import re
 from typing import Dict, Any
 
