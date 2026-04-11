@@ -97,6 +97,8 @@ jobs:
             main.py
 
       - name: Verify binary
+        env:
+          PYTHONUTF8: '1'
         run: |
           .\dist\sre-agent-windows.exe --help
           Get-Item dist\sre-agent-windows.exe | Select-Object Name, Length

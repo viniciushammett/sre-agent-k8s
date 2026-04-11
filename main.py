@@ -828,6 +828,11 @@ def run_single_command_mode(query: str, dry_run: bool = False):
 
 
 def main():
+    if sys.stdout.encoding != 'utf-8':
+        sys.stdout.reconfigure(encoding='utf-8')
+    if sys.stderr.encoding != 'utf-8':
+        sys.stderr.reconfigure(encoding='utf-8')
+
     args = sys.argv[1:]
     dry_run = "--dry-run" in args
     query_args = [a for a in args if a != "--dry-run"]
