@@ -128,6 +128,25 @@ User Input
 
 ---
 
+## ☁️ Cloud Compatibility
+
+The agent is cloud-agnostic by design. It uses `kubectl` as the sole
+execution path and inherits the current kubectl context from the environment.
+
+Any cluster reachable via kubectl is supported:
+
+| Provider | Setup |
+|---|---|
+| AWS EKS | `aws eks update-kubeconfig --name <cluster>` |
+| Azure AKS | `az aks get-credentials --name <cluster> --resource-group <rg>` |
+| GCP GKE | `gcloud container clusters get-credentials <cluster>` |
+| OCI | `oci ce cluster create-kubeconfig --cluster-id <id>` |
+| Local (minikube / kind / k3d) | already configured |
+
+No code changes required. The agent works wherever `kubectl get pods` works.
+
+---
+
 ## 🚀 Usage
 
 ### Run the agent
