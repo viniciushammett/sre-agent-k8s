@@ -1,0 +1,191 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Run security scan
+        run: |
+          pip install -r requirements.txt
+          pip-audit --requirement requirements.txt --format=json --output=audit-report.json || true
+          pip-audit --requirement requirements.txt
+
+      - name: Upload audit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-audit-report
+          path: audit-report.json
+
+  build-linux:
+    name: Build Linux Binary
+    runs-on: ubuntu-latest
+    needs: security-scan
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build binary
+        run: |
+          pyinstaller \
+            --onefile \
+            --name sre-agent-linux \
+            --clean \
+            main.py
+
+      - name: Verify binary
+        run: |
+          ./dist/sre-agent-linux --help || true
+          ls -lh dist/sre-agent-linux
+
+      - name: Upload Linux binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: sre-agent-linux
+          path: dist/sre-agent-linux
+
+  build-windows:
+    name: Build Windows Binary
+    runs-on: windows-latest
+    needs: security-scan
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build binary
+        run: |
+          pyinstaller `
+            --onefile `
+            --name sre-agent-windows `
+            --clean `
+            main.py
+
+      - name: Verify binary
+        run: |
+          .\dist\sre-agent-windows.exe --help
+          Get-Item dist\sre-agent-windows.exe | Select-Object Name, Length
+
+      - name: Upload Windows binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: sre-agent-windows
+          path: dist/sre-agent-windows.exe
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [build-linux, build-windows]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Linux binary
+        uses: actions/download-artifact@v4
+        with:
+          name: sre-agent-linux
+          path: dist/
+
+      - name: Download Windows binary
+        uses: actions/download-artifact@v4
+        with:
+          name: sre-agent-windows
+          path: dist/
+
+      - name: Download audit report
+        uses: actions/download-artifact@v4
+        with:
+          name: security-audit-report
+          path: dist/
+
+      - name: Make Linux binary executable
+        run: chmod +x dist/sre-agent-linux
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum sre-agent-linux > sre-agent-linux.sha256
+          sha256sum sre-agent-windows.exe > sre-agent-windows.sha256
+          cat sre-agent-linux.sha256
+          cat sre-agent-windows.sha256
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body: |
+            ## SRE Agent for Kubernetes ${{ github.ref_name }}
+
+            Deterministic, rule-based SRE Agent for Kubernetes. No LLM required.
+
+            ### Downloads
+
+            | Platform | File | Notes |
+            |---|---|---|
+            | Linux (x86_64) | `sre-agent-linux` | chmod +x before running |
+            | Windows (x86_64) | `sre-agent-windows.exe` | Run from terminal |
+
+            ### Requirements
+            - kubectl configured and pointing to a cluster
+            - No Python installation required
+
+            ### Usage
+            ```bash
+            # Linux
+            chmod +x sre-agent-linux
+            ./sre-agent-linux
+            ./sre-agent-linux "list pods in namespace sre-demo"
+            ./sre-agent-linux --dry-run
+
+            # Windows
+            sre-agent-windows.exe
+            sre-agent-windows.exe "list pods in namespace sre-demo"
+            sre-agent-windows.exe --dry-run
+            ```
+
+            ### Verify integrity
+            ```bash
+            sha256sum -c sre-agent-linux.sha256
+            ```
+          files: |
+            dist/sre-agent-linux
+            dist/sre-agent-linux.sha256
+            dist/sre-agent-windows.exe
+            dist/sre-agent-windows.sha256
+            dist/audit-report.json
+          draft: false
+          prerelease: false
