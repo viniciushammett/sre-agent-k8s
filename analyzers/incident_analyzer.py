@@ -13,8 +13,15 @@ import re
 from typing import Dict, Any
 
 
+def normalize_input(text: str) -> str:
+    """Normaliza input: lowercase, colapsa espaços, strip."""
+    text = text.lower().strip()
+    text = re.sub(r'\s+', ' ', text)
+    return text
+
+
 def suggest_remediation(incident: str) -> Dict[str, Any]:
-    text = incident.strip().lower()
+    text = normalize_input(incident)
 
     match = re.search(
         r"(?:list|show)\s+pods?(?:\s+wide)?(?:\s+running)?"
@@ -39,7 +46,11 @@ def suggest_remediation(incident: str) -> Dict[str, Any]:
             "reason": f"User requested deployment listing for namespace {namespace}.",
         }
 
-    match = re.search(r"(?:check|status of)\s+pod\s+([a-z0-9-]+)\s+in\s+namespace\s+([a-z0-9-]+)", text)
+    match = re.search(
+        r"(?:check|inspect|analyze|status\s+of|get\s+status\s+of)\s+pod\s+([a-z0-9][a-z0-9\-\.]+)"
+        r"\s+in\s+(?:namespace\s+)?([a-z0-9][a-z0-9\-]+)",
+        text,
+    )
     if match:
         pod_name, namespace = match.group(1), match.group(2)
         return {
@@ -152,7 +163,7 @@ def suggest_remediation(incident: str) -> Dict[str, Any]:
             "reason": "User requested pod listing. Namespace will be inferred from session context.",
         }
 
-    match = re.search(r"^(?:show\s+)?logs?$", text)
+    match = re.search(r"^(?:show\s+)?(?:me\s+)?(?:the\s+)?logs?\s*$", text)
     if match:
         return {
             "action": "get_pod_logs",
@@ -160,7 +171,7 @@ def suggest_remediation(incident: str) -> Dict[str, Any]:
             "reason": "User requested logs. Pod and namespace will be inferred from session context.",
         }
 
-    match = re.search(r"^show\s+previous\s+logs?$", text)
+    match = re.search(r"^(?:show\s+)?(?:me\s+)?(?:the\s+)?(?:previous|prev|last|old)\s+logs?\s*$", text)
     if match:
         return {
             "action": "get_pod_previous_logs",
@@ -177,7 +188,18 @@ def suggest_remediation(incident: str) -> Dict[str, Any]:
             "reason": f"User requested describe for pod {pod_name}. Namespace will be inferred from session context.",
         }
 
-    match = re.search(r"^(?:check|status of)\s+pod\s+([a-z0-9-]+)$", text)
+    match = re.search(r"^describe\s+pod$", text)
+    if match:
+        return {
+            "action": "describe_pod",
+            "params": {},
+            "reason": "User requested describe pod. Pod and namespace will be inferred from session context.",
+        }
+
+    match = re.search(
+        r"^(?:check|inspect|analyze|status\s+of|get\s+status\s+of)\s+pod\s+([a-z0-9][a-z0-9\-\.]+)$",
+        text,
+    )
     if match:
         pod_name = match.group(1)
         return {
@@ -186,13 +208,13 @@ def suggest_remediation(incident: str) -> Dict[str, Any]:
             "reason": f"User requested status for pod {pod_name}. Namespace will be inferred from session context.",
         }
 
-    match = re.search(r"^restart\s+pod\s+([a-z0-9-]+)$", text)
+    match = re.search(r"^(?:restart|delete|kill)\s+pod\s+([a-z0-9][a-z0-9\-\.]+)$", text)
     if match:
         pod_name = match.group(1)
         return {
             "action": "delete_pod",
             "params": {"pod_name": pod_name},
-            "reason": f"User requested restart for pod {pod_name}. Namespace will be inferred from session context.",
+            "reason": f"User requested restart/delete for pod {pod_name}. Namespace will be inferred from session context.",
         }
 
     match = re.search(

@@ -47,6 +47,7 @@ from cause_based_remediator import plan_next_steps
 from analyzers.diagnosis_engine import DiagnosisEngine
 from analyzers.workload_classifier import WorkloadClassifier, NO_RESTART
 from reporters.incident_reporter import IncidentReporter, IncidentReport
+from utils.pod_resolver import resolve_pod_name
 
 AUTO_REMEDIATE = True
 AUTO_FOLLOW_UP = True
@@ -114,13 +115,24 @@ class SessionContext:
     def __init__(self):
         self.active_namespace: str | None = None
         self.active_pod: str | None = None
+        self.active_workload: str | None = None
+        self.last_action: str | None = None
 
     def update(self, params: dict) -> None:
-        """Atualiza o contexto com os params da última ação executada."""
-        if params.get("namespace"):
-            self.active_namespace = params["namespace"]
-        if params.get("pod_name"):
+        """Atualiza o contexto com os params da última ação executada.
+        Ao trocar namespace, limpa active_pod e active_workload."""
+        if "namespace" in params:
+            new_ns = params["namespace"]
+            if new_ns != self.active_namespace:
+                self.active_pod = None
+                self.active_workload = None
+            self.active_namespace = new_ns
+        if "pod_name" in params:
             self.active_pod = params["pod_name"]
+        if "workload_name" in params:
+            self.active_workload = params["workload_name"]
+        if "action" in params:
+            self.last_action = params["action"]
 
     def fill(self, params: dict) -> dict:
         """
@@ -138,12 +150,56 @@ class SessionContext:
         """Limpa o contexto da sessão."""
         self.active_namespace = None
         self.active_pod = None
+        self.active_workload = None
+        self.last_action = None
 
     def prompt(self) -> str:
         """Retorna o texto do prompt com namespace ativo se disponível."""
         if self.active_namespace:
             return f"sre-agent [{self.active_namespace}]> "
         return "sre-agent> "
+
+
+def _run_remediation_action(active_remediator, workload_info, namespace: str, pod_name: str, interactive: bool = False):
+    """Executa a ação de remediação correta com base no workload_info. Retorna (success, output)."""
+    if workload_info and workload_info.recommended_action == "rollout_restart_statefulset":
+        if not interactive:
+            print(f"[OWNER] Pod pertence ao StatefulSet '{workload_info.workload_name}'. Executando rollout restart.")
+        rem_success, rem_output = active_remediator.rollout_restart_statefulset(
+            namespace=namespace,
+            statefulset_name=workload_info.workload_name,
+        )
+        if not interactive:
+            print(f"[REMEDIATION] rollout restart statefulset: {'OK' if rem_success else 'FAILED'} — {rem_output}")
+    elif workload_info and workload_info.recommended_action == "rollout_restart_daemonset":
+        if not interactive:
+            print(f"[OWNER] Pod pertence ao DaemonSet '{workload_info.workload_name}'. Executando rollout restart.")
+        rem_success, rem_output = active_remediator.rollout_restart_daemonset(
+            namespace=namespace,
+            daemonset_name=workload_info.workload_name,
+        )
+        if not interactive:
+            print(f"[REMEDIATION] rollout restart daemonset: {'OK' if rem_success else 'FAILED'} — {rem_output}")
+    elif workload_info and workload_info.recommended_action == "rollout_restart_deployment":
+        if not interactive:
+            print(f"[OWNER] Pod pertence ao deployment '{workload_info.workload_name}'. Preferindo rollout restart.")
+        rem_success, rem_output = active_remediator.rollout_restart_deployment(
+            namespace=namespace,
+            deployment_name=workload_info.workload_name,
+        )
+        if not interactive:
+            print(f"[REMEDIATION] rollout restart: {'OK' if rem_success else 'FAILED'} — {rem_output}")
+    else:
+        rem_success, rem_output = active_remediator.delete_pod(
+            namespace=namespace,
+            pod_name=pod_name,
+        )
+        if not interactive:
+            print(f"[REMEDIATION] delete pod: {'OK' if rem_success else 'FAILED'} — {rem_output}")
+    if interactive:
+        status_str = "OK" if rem_success else "FAILED"
+        print(f"[REMEDIATION] {status_str} — {rem_output}")
+    return rem_success, rem_output
 
 
 def execute_action(action: str, params: dict):
@@ -216,7 +272,7 @@ def parse_status_output(output):
     return None
 
 
-def maybe_execute_follow_up(state_result: PodStateEvaluation):
+def maybe_execute_follow_up(state_result: PodStateEvaluation, interactive: bool = False):
     follow_up_action = state_result.get("suggested_follow_up_action")
     follow_up_params = state_result.get("suggested_follow_up_params", {})
 
@@ -231,18 +287,21 @@ def maybe_execute_follow_up(state_result: PodStateEvaluation):
     if not follow_up_action:
         return result
 
-    _section("FOLLOW-UP")
-    print(f"Follow-up action: {follow_up_action}")
-    print(f"Follow-up params: {follow_up_params}")
+    if not interactive:
+        _section("FOLLOW-UP")
+        print(f"Follow-up action: {follow_up_action}")
+        print(f"Follow-up params: {follow_up_params}")
 
     if not AUTO_FOLLOW_UP:
-        print("[INFO] AUTO_FOLLOW_UP is disabled. Skipping follow-up execution.")
+        if not interactive:
+            print("[INFO] AUTO_FOLLOW_UP is disabled. Skipping follow-up execution.")
         return result
 
     success, output = execute_action(follow_up_action, follow_up_params)
 
-    _section("FOLLOW-UP OUTPUT")
-    print(output)
+    if not interactive:
+        _section("FOLLOW-UP OUTPUT")
+        print(output)
 
     result["executed"] = True
     result["success"] = success
@@ -285,21 +344,22 @@ def print_incident_summary(summary: dict):
     print(f"{'═' * 60}")
 
 
-def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: bool = False, reporter: IncidentReporter = None):
+def _error_no_pod(ctx: "SessionContext | None") -> None:
+    """Exibe erro de pod ausente com sugestão do último pod usado."""
+    if ctx and ctx.active_pod:
+        print("[ERROR] Pod não especificado.")
+        print(f"        Último pod usado: {ctx.active_pod}")
+        print( "        Use: use last  — para reutilizar")
+        print( "        Ou especifique: check pod <nome>")
+    else:
+        print("[ERROR] Pod não especificado e nenhum pod ativo no contexto.")
+        print("        Use: check pod <nome> in namespace <ns>")
+
+
+def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: bool = False, reporter: IncidentReporter = None, interactive: bool = False):
     """Recebe a descrição do incidente e executa o pipeline completo."""
     _real_remediator = _KubectlFunctionsAdapter()
     active_remediator = DryRunRemediator(_real_remediator) if dry_run else _real_remediator
-    print("=" * 60)
-    print("SRE AGENT :: HTTP + SSH + K8s + Incident Analysis")
-    print("=" * 60)
-    if ctx and ctx.active_namespace:
-        print(f"[SESSION] namespace={ctx.active_namespace}", end="")
-        if ctx.active_pod:
-            print(f"  pod={ctx.active_pod}", end="")
-        print()
-    print(f"[CONFIG] AUTO_REMEDIATE={AUTO_REMEDIATE}")
-    print(f"[CONFIG] AUTO_FOLLOW_UP={AUTO_FOLLOW_UP}")
-    print()
 
     incident = query
     analysis = suggest_remediation(incident)
@@ -315,14 +375,31 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
         params_check = analysis["params"]
         if analysis["action"] in _REQUIRED_NAMESPACE_ACTIONS:
             if not params_check.get("namespace"):
-                print("[ERROR] Namespace não especificado e não encontrado no contexto.")
-                print("        Use: set namespace <nome>  ou inclua 'in namespace <nome>' no comando.")
+                print("[ERROR] Namespace não especificado.")
+                print("        Use: set namespace <nome>")
                 return False
             if analysis["action"] in _REQUIRED_POD_ACTIONS:
                 if not params_check.get("pod_name"):
-                    print("[ERROR] Pod não especificado e não encontrado no contexto.")
-                    print("        Use: set namespace <nome> e inclua o nome do pod no comando.")
+                    _error_no_pod(ctx)
                     return False
+        if analysis["action"] in _REQUIRED_POD_ACTIONS and params_check.get("pod_name") and params_check.get("namespace"):
+            _resolution = resolve_pod_name(
+                pod_name=params_check["pod_name"],
+                namespace=params_check["namespace"],
+                last_pod=ctx.active_pod if ctx else None,
+            )
+            if _resolution["status"] == "resolved":
+                print(f"[RESOLVER] {_resolution['message']}")
+                analysis["params"]["pod_name"] = _resolution["resolved"]
+                params_check = analysis["params"]
+            elif _resolution["status"] == "ambiguous":
+                print(f"[RESOLVER] {_resolution['message']}")
+                return False
+            elif _resolution["status"] in ("not_found", "no_namespace"):
+                print(f"[ERROR] {_resolution['message']}")
+                return False
+            # "exact" → segue normalmente
+
         if analysis["action"] == "rollout_restart_deployment":
             success, output = active_remediator.rollout_restart_deployment(
                 namespace=analysis["params"]["namespace"],
@@ -334,7 +411,7 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
         if success:
             print(output)
             if ctx:
-                ctx.update(analysis["params"])
+                ctx.update({**analysis["params"], "action": analysis["action"]})
         else:
             print(f"[ERROR] {output}")
         return success
@@ -365,8 +442,9 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
 
     _section("ANALYSIS")
     print(f"Reason: {analysis['reason']}")
-    print(f"Suggested action: {analysis['action']}")
-    print(f"Parameters: {analysis['params']}")
+    if not interactive:
+        print(f"Suggested action: {analysis['action']}")
+        print(f"Parameters: {analysis['params']}")
 
     action = analysis["action"]
     params = analysis["params"]
@@ -375,13 +453,12 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
 
     if action in _REQUIRED_NAMESPACE_ACTIONS:
         if not params.get("namespace"):
-            print("[ERROR] Namespace não especificado e não encontrado no contexto.")
-            print("        Use: set namespace <nome>  ou inclua 'in namespace <nome>' no comando.")
+            print("[ERROR] Namespace não especificado.")
+            print("        Use: set namespace <nome>")
             return False
         if action in _REQUIRED_POD_ACTIONS:
             if not params.get("pod_name"):
-                print("[ERROR] Pod não especificado e não encontrado no contexto.")
-                print("        Use: set namespace <nome> e inclua o nome do pod no comando.")
+                _error_no_pod(ctx)
                 return False
 
     if not action:
@@ -390,13 +467,31 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
         write_incident_summary(summary)
         return True
 
+    if action in _REQUIRED_POD_ACTIONS and params.get("pod_name") and params.get("namespace"):
+        _resolution = resolve_pod_name(
+            pod_name=params["pod_name"],
+            namespace=params["namespace"],
+            last_pod=ctx.active_pod if ctx else None,
+        )
+        if _resolution["status"] == "resolved":
+            print(f"[RESOLVER] {_resolution['message']}")
+            params["pod_name"] = _resolution["resolved"]
+        elif _resolution["status"] == "ambiguous":
+            print(f"[RESOLVER] {_resolution['message']}")
+            return False
+        elif _resolution["status"] in ("not_found", "no_namespace"):
+            print(f"[ERROR] {_resolution['message']}")
+            return False
+        # "exact" → segue normalmente
+
     success, output = execute_action(action, params)
     summary["initial_action_success"] = success
     if ctx and success:
-        ctx.update(params)
+        ctx.update({**params, "action": action})
 
-    _section("ACTION OUTPUT")
-    print(output)
+    if not interactive:
+        _section("ACTION OUTPUT")
+        print(output)
 
     workload_info = None
     diagnosis_report = None
@@ -429,12 +524,13 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
         summary["follow_up_action"] = state_result["suggested_follow_up_action"]
         summary["remediation_action"] = state_result["recommended_action"]
 
-        _section("STATE EVALUATION")
-        print(f"Health status: {state_result['health_status']}")
-        print(f"Requires remediation: {state_result['requires_remediation']}")
-        print(f"Recommended action: {state_result['recommended_action']}")
-        print(f"Suggested follow-up action: {state_result['suggested_follow_up_action']}")
-        print(f"Suggested follow-up params: {state_result['suggested_follow_up_params']}")
+        if not interactive:
+            _section("STATE EVALUATION")
+            print(f"Health status: {state_result['health_status']}")
+            print(f"Requires remediation: {state_result['requires_remediation']}")
+            print(f"Recommended action: {state_result['recommended_action']}")
+            print(f"Suggested follow-up action: {state_result['suggested_follow_up_action']}")
+            print(f"Suggested follow-up params: {state_result['suggested_follow_up_params']}")
 
         # classificar workload antes de remediar
         if params.get("pod_name") and params.get("namespace"):
@@ -480,7 +576,7 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
             print(f"Safe to automate:      {diagnosis_report.safe_to_automate}")
             print(f"Requires human review: {diagnosis_report.requires_human_review}")
 
-        follow_up_result = maybe_execute_follow_up(state_result)
+        follow_up_result = maybe_execute_follow_up(state_result, interactive=interactive)
         summary["follow_up_executed"] = follow_up_result["executed"]
 
         cause_result = None
@@ -502,18 +598,19 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
             summary["requires_human_review"] = plan["requires_human_review"]
             summary["safe_remediation_selected"] = plan["safe_remediation"]
             summary["cause_explanation"] = plan["explanation"]
-            _section("REMEDIATION PLAN")
-            print(f"Recommended checks: {plan['recommended_checks']}")
-            print(f"Requires human review: {plan['requires_human_review']}")
-            print(f"Explanation: {plan['explanation']}")
-            if (
-                not plan["requires_human_review"]
-                and cause_result["confidence"] != "low"
-                and plan["safe_remediation"]
-            ):
-                print(f"Safe remediation: {plan['safe_remediation']}")
-            else:
-                print("[INFO] Safe remediation skipped: requires human review or low confidence.")
+            if not interactive:
+                _section("REMEDIATION PLAN")
+                print(f"Recommended checks: {plan['recommended_checks']}")
+                print(f"Requires human review: {plan['requires_human_review']}")
+                print(f"Explanation: {plan['explanation']}")
+                if (
+                    not plan["requires_human_review"]
+                    and cause_result["confidence"] != "low"
+                    and plan["safe_remediation"]
+                ):
+                    print(f"Safe remediation: {plan['safe_remediation']}")
+                else:
+                    print("[INFO] Safe remediation skipped: requires human review or low confidence.")
 
         cause_allows_remediation = (
             plan is None
@@ -551,56 +648,68 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
                 # pular remediação
             else:
                 allowed, reason = can_auto_remediate(namespace, pod_name, "delete_pod")
-                _section("AUTO-REMEDIATION")
-                print(f"Remediation guard: {reason}")
 
-                if allowed:
-                    register_remediation_attempt(namespace, pod_name, "delete_pod")
-
-                    if workload_info and workload_info.recommended_action == "rollout_restart_statefulset":
-                        print(f"[OWNER] Pod pertence ao StatefulSet '{workload_info.workload_name}'. Executando rollout restart.")
-                        rem_success, rem_output = active_remediator.rollout_restart_statefulset(
-                            namespace=namespace,
-                            statefulset_name=workload_info.workload_name,
-                        )
-                        print(f"[REMEDIATION] rollout restart statefulset: {'OK' if rem_success else 'FAILED'} — {rem_output}")
-                    elif workload_info and workload_info.recommended_action == "rollout_restart_daemonset":
-                        print(f"[OWNER] Pod pertence ao DaemonSet '{workload_info.workload_name}'. Executando rollout restart.")
-                        rem_success, rem_output = active_remediator.rollout_restart_daemonset(
-                            namespace=namespace,
-                            daemonset_name=workload_info.workload_name,
-                        )
-                        print(f"[REMEDIATION] rollout restart daemonset: {'OK' if rem_success else 'FAILED'} — {rem_output}")
-                    elif workload_info and workload_info.recommended_action == "rollout_restart_deployment":
-                        print(f"[OWNER] Pod pertence ao deployment '{workload_info.workload_name}'. Preferindo rollout restart.")
-                        rem_success, rem_output = active_remediator.rollout_restart_deployment(
-                            namespace=namespace,
-                            deployment_name=workload_info.workload_name,
-                        )
-                        print(f"[REMEDIATION] rollout restart: {'OK' if rem_success else 'FAILED'} — {rem_output}")
+                if interactive:
+                    # diálogo de confirmação — pergunta ANTES de checar o guard
+                    recommended = state_result["recommended_action"]
+                    action_target = workload_info.action_target if workload_info and workload_info.action_target else pod_name
+                    print(f"\n[REMEDIATION] Ação recomendada: {recommended}")
+                    print(f"             Alvo: {action_target}")
+                    try:
+                        confirm = input("Deseja executar a remediação? (y/n): ").strip().lower()
+                    except (KeyboardInterrupt, EOFError):
+                        confirm = "n"
+                    if confirm != "y":
+                        print("[REMEDIATION] Remediação cancelada pelo usuário.")
+                        summary["remediation_executed"] = False
+                        summary["final_outcome"] = "Remediação cancelada pelo usuário."
                     else:
-                        rem_success, rem_output = active_remediator.delete_pod(
-                            namespace=namespace,
-                            pod_name=pod_name,
-                        )
-                        print(f"[REMEDIATION] delete pod: {'OK' if rem_success else 'FAILED'} — {rem_output}")
-
-                    _section("AUTO-REMEDIATION OUTPUT")
-                    print(rem_output)
-
-                    summary["remediation_executed"] = True
-                    summary["remediation_success"] = rem_success
-
-                    if rem_success:
-                        summary["final_outcome"] = "Follow-up collected and auto-remediation applied successfully."
-                    else:
-                        summary["final_outcome"] = "Follow-up collected, but auto-remediation failed."
+                        allowed, reason = can_auto_remediate(namespace, pod_name, "delete_pod")
+                        if not allowed:
+                            print(f"[REMEDIATION GUARD] {reason}")
+                            print("[REMEDIATION] Remediação bloqueada pelo guard.")
+                            summary["remediation_action"] = "delete_pod"
+                            summary["remediation_executed"] = False
+                            summary["remediation_success"] = False
+                            summary["final_outcome"] = "Auto-remediation was blocked by guard."
+                        else:
+                            register_remediation_attempt(namespace, pod_name, "delete_pod")
+                            rem_success, rem_output = _run_remediation_action(
+                                active_remediator, workload_info, namespace, pod_name, interactive=True
+                            )
+                            summary["remediation_executed"] = True
+                            summary["remediation_success"] = rem_success
+                            if rem_success:
+                                summary["final_outcome"] = "Follow-up collected and auto-remediation applied successfully."
+                            else:
+                                summary["final_outcome"] = "Follow-up collected, but auto-remediation failed."
                 else:
-                    summary["remediation_action"] = "delete_pod"
-                    summary["remediation_executed"] = False
-                    summary["remediation_success"] = False
-                    summary["final_outcome"] = "Auto-remediation was blocked by guard."
-                    print("\n[-] Auto-remediation blocked by guard.")
+                    allowed, reason = can_auto_remediate(namespace, pod_name, "delete_pod")
+                    _section("AUTO-REMEDIATION")
+                    print(f"Remediation guard: {reason}")
+
+                    if allowed:
+                        register_remediation_attempt(namespace, pod_name, "delete_pod")
+                        rem_success, rem_output = _run_remediation_action(
+                            active_remediator, workload_info, namespace, pod_name, interactive=False
+                        )
+
+                        _section("AUTO-REMEDIATION OUTPUT")
+                        print(rem_output)
+
+                        summary["remediation_executed"] = True
+                        summary["remediation_success"] = rem_success
+
+                        if rem_success:
+                            summary["final_outcome"] = "Follow-up collected and auto-remediation applied successfully."
+                        else:
+                            summary["final_outcome"] = "Follow-up collected, but auto-remediation failed."
+                    else:
+                        summary["remediation_action"] = "delete_pod"
+                        summary["remediation_executed"] = False
+                        summary["remediation_success"] = False
+                        summary["final_outcome"] = "Auto-remediation was blocked by guard."
+                        print("\n[-] Auto-remediation blocked by guard.")
         else:
             if follow_up_result["executed"]:
                 summary["final_outcome"] = "Diagnostic follow-up executed. No remediation applied."
@@ -612,7 +721,15 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
         else:
             summary["final_outcome"] = "Action execution failed."
 
-    print_incident_summary(summary)
+    if interactive:
+        try:
+            confirm_summary = input("\nExibir incident summary completo? (y/n): ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            confirm_summary = "n"
+        if confirm_summary == "y":
+            print_incident_summary(summary)
+    else:
+        print_incident_summary(summary)
     write_incident_summary(summary)
 
     if reporter:
@@ -693,8 +810,12 @@ def print_help():
     print(f"{'─' * 60}")
 
 
-def run_interactive_mode(dry_run: bool = False):
-    """Inicia o loop REPL interativo do agente."""
+def run_interactive_mode(dry_run: bool = False, auto: bool = False):
+    """Inicia o loop REPL interativo do agente.
+
+    auto=True → comportamento atual sem diálogos de confirmação.
+    auto=False (padrão) → output limpo + confirmação antes de remediação.
+    """
     ctx = SessionContext()
     history = []
     session_id = str(uuid.uuid4())[:8]
@@ -702,6 +823,8 @@ def run_interactive_mode(dry_run: bool = False):
     print(f"[SESSION ID] {session_id}")
     if dry_run:
         print("[DRY-RUN] Modo simulação ativo — nenhuma ação destrutiva será executada.")
+    if auto:
+        print("[AUTO] Modo automático ativo — sem confirmações interativas.")
     print("SRE Agent started.")
     print("Type your request or 'exit' to quit.\n")
 
@@ -743,10 +866,31 @@ def run_interactive_mode(dry_run: bool = False):
         if query.lower().startswith("set namespace "):
             ns = query.split("set namespace ", 1)[1].strip()
             if ns:
+                _prev_pod = ctx.active_pod
                 ctx.update({"namespace": ns})
                 print(f"[SESSION] namespace ativo: {ns}")
+                if _prev_pod and ctx.active_pod is None:
+                    print(f"[SESSION] pod limpo — namespace trocado")
             else:
                 print("[ERROR] Informe o namespace. Ex: set namespace sre-demo")
+            continue
+
+        if query.lower().strip() == "use last":
+            if not ctx.active_pod:
+                print("[SESSION] Nenhum pod ativo. Execute um comando com pod primeiro.")
+            elif not ctx.last_action:
+                print("[SESSION] Nenhuma ação anterior registrada.")
+            elif ctx.last_action not in {"get_pod_logs", "get_pod_previous_logs", "describe_pod", "get_pod_status", "get_pod_node"}:
+                print(f"[SESSION] Ação '{ctx.last_action}' não pode ser reutilizada com 'use last'.")
+            else:
+                print(f"[SESSION] Usando último pod: {ctx.active_pod}")
+                _params = {"namespace": ctx.active_namespace, "pod_name": ctx.active_pod}
+                _success, _output = execute_action(ctx.last_action, _params)
+                print()
+                if _success:
+                    print(_output)
+                else:
+                    print(f"[ERROR] {_output}")
             continue
 
         if query.lower() == "show context":
@@ -811,7 +955,7 @@ def run_interactive_mode(dry_run: bool = False):
                 print(f"{'─' * 60}")
             continue
 
-        process_user_input(query, ctx, dry_run=dry_run, reporter=reporter)
+        process_user_input(query, ctx, dry_run=dry_run, reporter=reporter, interactive=not auto)
 
 
 def run_single_command_mode(query: str, dry_run: bool = False):
@@ -835,13 +979,14 @@ def main():
 
     args = sys.argv[1:]
     dry_run = "--dry-run" in args
-    query_args = [a for a in args if a != "--dry-run"]
+    auto = "--auto" in args
+    query_args = [a for a in args if a not in ("--dry-run", "--auto")]
     query = " ".join(query_args).strip() if query_args else None
 
     if query:
         run_single_command_mode(query, dry_run=dry_run)
     else:
-        run_interactive_mode(dry_run=dry_run)
+        run_interactive_mode(dry_run=dry_run, auto=auto)
 
 
 if __name__ == "__main__":
