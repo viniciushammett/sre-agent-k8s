@@ -82,6 +82,22 @@ This project simulates real-world SRE workflows by combining:
 - `incidents` filters by active namespace
 - `incidents last N`, `incidents all` with namespace tag per record
 
+### 🔁 Simulation Mode
+- Simulate pod failure states without a broken cluster
+- Supported states: `crashloop`, `imagepull`, `pending`, `oomkilled`
+- Full pipeline execution with simulated state
+
+### 📡 Continuous Monitoring
+- Poll cluster state on a configurable interval (default: 30s)
+- Detect state changes: new pods, removed pods, state transitions
+- Automatically triggers incident pipeline on unhealthy state detected
+
+### ⚡ Event-Driven Mode
+- Stream Kubernetes events in real time via `kubectl get events --watch`
+- Captures: `BackOff`, `OOMKilling`, `Failed`, `FailedScheduling`, `Unhealthy`, `FailedMount`, `ErrImagePull`, `ImagePullBackOff`
+- Automatically triggers incident pipeline on relevant events
+- Runs in parallel with monitoring mode
+
 ---
 
 ## ⚙️ How it works
@@ -139,35 +155,63 @@ No code changes required. The agent works wherever `kubectl get pods` works.
 
 ## 📦 Requirements
 
-- Python 3.10+
-- kubectl configured and pointing to a cluster
+- `kubectl` configured and pointing to a cluster
+- No Python installation required
 
 ---
 
 ## 🚀 Usage
 
+### Download
+
+| Platform | File | Notes |
+|---|---|---|
+| Linux (x86_64) | `sre-agent-linux` | `chmod +x` before running |
+| Windows (x86_64) | `sre-agent-windows.exe` | Run from terminal |
+
 ### Run the agent
 
-**Interactive REPL mode** (recommended):
+**Linux:**
 ```bash
-source venv/bin/activate
-python main.py
+chmod +x sre-agent-linux
+
+# Interactive REPL mode (recommended)
+./sre-agent-linux
+
+# Single command mode
+./sre-agent-linux "list pods in namespace sre-demo"
+
+# Dry-run mode (simulate destructive actions)
+./sre-agent-linux --dry-run
+./sre-agent-linux --dry-run "check pod demo-nginx in namespace sre-demo"
+
+# Auto mode (skip confirmation dialogs)
+./sre-agent-linux --auto
+
+# Continuous monitoring mode
+./sre-agent-linux monitor --namespace <namespace>
+./sre-agent-linux monitor --namespace <namespace> --interval 60
+
+# Event-driven mode
+./sre-agent-linux events --namespace <namespace>
 ```
 
-**Single command mode:**
+**Windows:**
 ```bash
-python main.py "list pods in namespace sre-demo"
-```
+# Interactive REPL mode (recommended)
+sre-agent-windows.exe
 
-**Dry-run mode** (simulate destructive actions):
-```bash
-python main.py --dry-run
-python main.py --dry-run "check pod demo-nginx in namespace sre-demo"
-```
+# Single command mode
+sre-agent-windows.exe "list pods in namespace sre-demo"
 
-**Auto mode** (skip confirmation dialogs):
-```bash
-python main.py --auto
+# Dry-run mode
+sre-agent-windows.exe --dry-run
+
+# Continuous monitoring mode
+sre-agent-windows.exe monitor --namespace <namespace>
+
+# Event-driven mode
+sre-agent-windows.exe events --namespace <namespace>
 ```
 
 ### Exit codes (single command mode)
@@ -187,6 +231,7 @@ python main.py --auto
 ### 1. Cluster-wide
 
 ```bash
+# cluster-wide — no namespace required
 list namespaces
 list nodes
 list all pods
@@ -195,11 +240,12 @@ list all pods
 ### 2. Namespace operations
 
 ```bash
-list pods in namespace sre-demo
-list pods wide in namespace sre-demo
-list services in namespace sre-demo
-list deployments in namespace sre-demo
-rollout restart deployment demo-nginx in namespace sre-demo
+# replace <namespace> with your target namespace
+list pods in namespace <namespace>
+list pods wide in namespace <namespace>
+list services in namespace <namespace>
+list deployments in namespace <namespace>
+rollout restart deployment demo-nginx in namespace <namespace>
 ```
 
 ### 3. Session context — set namespace once, use short commands
@@ -248,6 +294,17 @@ help
 incidents                  # current namespace incidents
 incidents last 5           # last 5 of current namespace
 incidents all              # all namespaces with [ns:...] tag
+```
+
+### 8. Monitoring & events
+
+```bash
+# continuous monitoring — polls cluster state every 30s
+./sre-agent-linux monitor --namespace <namespace>
+./sre-agent-linux monitor --namespace <namespace> --interval 60
+
+# event-driven mode — streams kubectl events in real time
+./sre-agent-linux events --namespace <namespace>
 ```
 
 ---
