@@ -130,3 +130,7 @@ class IncidentReporter:
         """
         sid = session_id or self.session_id
         return [r for r in self.load_all() if r.session_id == sid]
+
+    def load_by_namespace(self, namespace: str) -> list[IncidentReport]:
+        """Carrega reports filtrados por namespace."""
+        return [r for r in self.load_all() if r.namespace == namespace]

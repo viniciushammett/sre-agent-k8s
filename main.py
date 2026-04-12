@@ -806,6 +806,13 @@ def print_help():
     incidents             → lista incidents da sessão atual
     incidents last <N>    → lista os últimos N incidents da sessão
     incidents all         → lista todos os incidents (todas as sessões)
+
+  NAVEGAÇÃO
+    clear / cls / reset   → limpa a tela (mantém sessão)
+    use last              → reutiliza último pod do contexto
+    ↑ / ↓                → navega histórico de comandos
+    Ctrl+C                → cancela linha atual
+    Ctrl+D                → sai do agente
 """)
     print(f"{'─' * 60}")
 
@@ -816,6 +823,12 @@ def run_interactive_mode(dry_run: bool = False, auto: bool = False):
     auto=True → comportamento atual sem diálogos de confirmação.
     auto=False (padrão) → output limpo + confirmação antes de remediação.
     """
+    try:
+        import readline
+        readline.parse_and_bind("tab: complete")
+    except ImportError:
+        pass  # Windows sem readline — degradação silenciosa
+
     ctx = SessionContext()
     history = []
     session_id = str(uuid.uuid4())[:8]
@@ -832,8 +845,8 @@ def run_interactive_mode(dry_run: bool = False, auto: bool = False):
         try:
             query = input(ctx.prompt()).strip()
         except KeyboardInterrupt:
-            print("\nInterrupted. Goodbye!")
-            break
+            print("\n[INFO] Use 'exit' para sair ou continue digitando.")
+            continue
         except EOFError:
             print("\nGoodbye!")
             break
@@ -855,6 +868,11 @@ def run_interactive_mode(dry_run: bool = False, auto: bool = False):
                 for i, cmd in enumerate(history, 1):
                     print(f"  {i:>3}. {cmd}")
                 print(f"{'─' * 60}")
+            continue
+
+        if query.lower().strip() in ("clear", "cls", "reset"):
+            import os
+            os.system("cls" if os.name == "nt" else "clear")
             continue
 
         history.append(query)
@@ -922,7 +940,8 @@ def run_interactive_mode(dry_run: bool = False, auto: bool = False):
                     outcome = r.final_outcome[:50] if r.final_outcome else "—"
                     dr = " [DRY-RUN]" if r.dry_run else ""
                     session = f"[{r.session_id}]" if r.session_id else ""
-                    print(f"  {r.incident_id} {session}{dr}")
+                    ns = f"[ns:{r.namespace}]" if r.namespace else ""
+                    print(f"  {r.incident_id} {session}{ns}{dr}")
                     print(f"    input:   {r.user_input[:60]}")
                     print(f"    state:   {state} | health: {health}")
                     print(f"    outcome: {outcome}")
@@ -933,14 +952,19 @@ def run_interactive_mode(dry_run: bool = False, auto: bool = False):
         _incidents_match = re.match(r"^incidents(?:\s+last\s+(\d+))?$", query.lower().strip())
         if _incidents_match:
             n = int(_incidents_match.group(1)) if _incidents_match.group(1) else None
-            session_reports = reporter.load_session()
+            if ctx.active_namespace:
+                session_reports = reporter.load_by_namespace(ctx.active_namespace)
+                scope = f"namespace {ctx.active_namespace}"
+            else:
+                session_reports = reporter.load_session()
+                scope = f"sessão {reporter.session_id}"
             if n:
                 session_reports = session_reports[-n:]
             if not session_reports:
-                print("[INCIDENTS] Nenhum incident registrado nesta sessão.")
+                print(f"[INCIDENTS] Nenhum incident registrado em {scope}.")
             else:
                 print(f"\n{'─' * 60}")
-                print(f"  INCIDENTS — sessão {reporter.session_id} ({len(session_reports)} registros)")
+                print(f"  INCIDENTS — {scope} ({len(session_reports)} registros)")
                 print(f"{'─' * 60}")
                 for r in session_reports:
                     state = r.detected_state or "—"
