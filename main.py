@@ -2,10 +2,12 @@
 SRE Agent Kubernetes — ponto de entrada principal.
 
 Modos de operação:
-    python main.py                    # modo interativo (REPL)
-    python main.py "comando"          # modo single command
-    python main.py --dry-run          # modo dry-run (simulação)
-    python main.py --dry-run "cmd"    # single command em dry-run
+    python main.py                                      # modo interativo (REPL)
+    python main.py "comando"                            # modo single command
+    python main.py --dry-run                            # modo dry-run (simulação)
+    python main.py --dry-run "cmd"                      # single command em dry-run
+    python main.py monitor --namespace <ns>             # monitoramento contínuo
+    python main.py monitor --namespace <ns> --interval 10
 
 Exit codes (modo single command):
     0  — sucesso
@@ -48,6 +50,9 @@ from analyzers.diagnosis_engine import DiagnosisEngine
 from analyzers.workload_classifier import WorkloadClassifier, NO_RESTART
 from reporters.incident_reporter import IncidentReporter, IncidentReport
 from utils.pod_resolver import resolve_pod_name
+from simulation.simulator import build_simulated_incident, SUPPORTED_STATES
+from monitoring.cluster_watcher import ClusterWatcher
+from monitoring.event_watcher import EventWatcher
 
 AUTO_REMEDIATE = True
 AUTO_FOLLOW_UP = True
@@ -347,12 +352,12 @@ def print_incident_summary(summary: dict):
 def _error_no_pod(ctx: "SessionContext | None") -> None:
     """Exibe erro de pod ausente com sugestão do último pod usado."""
     if ctx and ctx.active_pod:
-        print("[ERROR] Pod não especificado.")
-        print(f"        Último pod usado: {ctx.active_pod}")
+        print("[ERROR] No pod specified.")
+        print(f"        Last pod used: {ctx.active_pod}")
         print( "        Use: use last  — para reutilizar")
         print( "        Ou especifique: check pod <nome>")
     else:
-        print("[ERROR] Pod não especificado e nenhum pod ativo no contexto.")
+        print("[ERROR] No pod specified and no active pod in context.")
         print("        Use: check pod <nome> in namespace <ns>")
 
 
@@ -375,7 +380,7 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
         params_check = analysis["params"]
         if analysis["action"] in _REQUIRED_NAMESPACE_ACTIONS:
             if not params_check.get("namespace"):
-                print("[ERROR] Namespace não especificado.")
+                print("[ERROR] No namespace specified.")
                 print("        Use: set namespace <nome>")
                 return False
             if analysis["action"] in _REQUIRED_POD_ACTIONS:
@@ -453,7 +458,7 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
 
     if action in _REQUIRED_NAMESPACE_ACTIONS:
         if not params.get("namespace"):
-            print("[ERROR] Namespace não especificado.")
+            print("[ERROR] No namespace specified.")
             print("        Use: set namespace <nome>")
             return False
         if action in _REQUIRED_POD_ACTIONS:
@@ -632,17 +637,17 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
             # gate: bloquear restart para Job e CronJob
             if workload_info and workload_info.workload_type in NO_RESTART:
                 _section("AUTO-REMEDIATION")
-                print(f"[WORKLOAD GATE] Remediação bloqueada para {workload_info.workload_type}.")
+                print(f"[WORKLOAD GATE] Remediation blocked for {workload_info.workload_type}.")
                 if workload_info.workload_type == "Job":
-                    print("  Jobs não se resolvem com restart. Ações recomendadas:")
+                    print("  Jobs cannot be resolved with restart. Recommended actions:")
                     print("  1. Analisar logs do pod falho")
                     print("  2. Corrigir a causa raiz")
-                    print("  3. Criar novo Job se necessário")
+                    print("  3. Create a new Job if necessary")
                 elif workload_info.workload_type == "CronJob":
-                    print("  CronJobs são gerenciados automaticamente. Ações recomendadas:")
+                    print("  CronJobs are managed automatically. Recommended actions:")
                     print("  1. Analisar logs do pod falho")
-                    print("  2. Verificar schedule e configuração do CronJob")
-                    print("  3. Aguardar próximo ciclo ou triggerar manualmente")
+                    print("  2. Check CronJob schedule and configuration")
+                    print("  3. Wait for next cycle or trigger manually")
                 summary["remediation_executed"] = False
                 summary["final_outcome"] = f"Auto-remediation blocked: workload type {workload_info.workload_type} does not support restart."
                 # pular remediação
@@ -653,21 +658,21 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
                     # diálogo de confirmação — pergunta ANTES de checar o guard
                     recommended = state_result["recommended_action"]
                     action_target = workload_info.action_target if workload_info and workload_info.action_target else pod_name
-                    print(f"\n[REMEDIATION] Ação recomendada: {recommended}")
+                    print(f"\n[REMEDIATION] Recommended action: {recommended}")
                     print(f"             Alvo: {action_target}")
                     try:
                         confirm = input("Deseja executar a remediação? (y/n): ").strip().lower()
                     except (KeyboardInterrupt, EOFError):
                         confirm = "n"
                     if confirm != "y":
-                        print("[REMEDIATION] Remediação cancelada pelo usuário.")
+                        print("[REMEDIATION] Remediation cancelled by user.")
                         summary["remediation_executed"] = False
                         summary["final_outcome"] = "Remediação cancelada pelo usuário."
                     else:
                         allowed, reason = can_auto_remediate(namespace, pod_name, "delete_pod")
                         if not allowed:
                             print(f"[REMEDIATION GUARD] {reason}")
-                            print("[REMEDIATION] Remediação bloqueada pelo guard.")
+                            print("[REMEDIATION] Remediation blocked by guard.")
                             summary["remediation_action"] = "delete_pod"
                             summary["remediation_executed"] = False
                             summary["remediation_success"] = False
@@ -768,10 +773,105 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
     return summary.get("initial_action_success", True)
 
 
+def process_simulate_command(state: str, dry_run: bool = False, reporter: IncidentReporter = None) -> bool:
+    """Executa o pipeline de diagnóstico completo com estado simulado, sem kubectl.
+
+    Injeta status_data fabricado pelo simulator e passa pelo fluxo:
+        build_simulated_incident → evaluate_pod_state → DiagnosisEngine → reporter
+    Sem execute_action, sem follow-up, sem remediação real.
+    """
+    try:
+        status_data = build_simulated_incident(state)
+    except ValueError as e:
+        print(f"[SIMULATION ERROR] {e}")
+        valid = ", ".join(sorted(SUPPORTED_STATES))
+        print(f"[SIMULATION] Valid states: {valid}")
+        return False
+
+    pod_name      = status_data["pod_name"]
+    namespace     = status_data["namespace"]
+    parsed_status = status_data["parsed_status"]
+    container_name = status_data.get("container_name")
+    restart_count  = status_data.get("restart_count")
+
+    print(f"\n{'═' * 60}")
+    print(f"  [SIMULATION] Estado: {state.upper()}")
+    print(f"{'═' * 60}")
+    print(f"Pod:       {pod_name}")
+    print(f"Namespace: {namespace}")
+    print(f"Status:    {parsed_status}")
+    if container_name:
+        print(f"Container: {container_name}")
+    print(f"Restarts:  {restart_count}")
+
+    state_result = evaluate_pod_state(
+        parsed_status,
+        namespace=namespace,
+        pod_name=pod_name,
+        container_name=container_name,
+    )
+
+    _section("STATE EVALUATION")
+    print(f"Health status:        {state_result['health_status']}")
+    print(f"Requires remediation: {state_result['requires_remediation']}")
+    print(f"Recommended action:   {state_result['recommended_action']}")
+
+    diagnosis_report = None
+    if state_result["health_status"] != "healthy" and parsed_status:
+        diagnosis_report = _diagnosis_engine.investigate(
+            state=parsed_status,
+            pod_name=pod_name,
+            namespace=namespace,
+            container_name=container_name,
+        )
+        _section("DIAGNOSIS")
+        print(f"State:                 {diagnosis_report.state}")
+        print(f"Cause category:        {diagnosis_report.cause_category}")
+        print(f"Confidence:            {diagnosis_report.confidence}")
+        print(f"Hypothesis:            {diagnosis_report.hypothesis}")
+        if diagnosis_report.evidence:
+            print(f"Evidence ({len(diagnosis_report.evidence)} items collected):")
+            for e in diagnosis_report.evidence:
+                print(f"  · {e[:100]}")
+        if diagnosis_report.recommended_actions:
+            print("Recommended actions:")
+            for i, act in enumerate(diagnosis_report.recommended_actions, 1):
+                print(f"  {i}. {act}")
+        print(f"Safe to automate:      {diagnosis_report.safe_to_automate}")
+        print(f"Requires human review: {diagnosis_report.requires_human_review}")
+
+    print(f"\n{'─' * 60}")
+    print(f"  [SIMULATION] Pipeline completo — nenhum kubectl executado.")
+    print(f"{'─' * 60}")
+
+    if reporter:
+        report = reporter.build(
+            user_input=f"simulate {state}",
+            namespace=namespace,
+            pod_name=pod_name,
+            input_type="simulation",
+            action="get_pod_status",
+            action_success=True,
+            detected_state=parsed_status,
+            health_status=state_result.get("health_status"),
+            container_name=container_name,
+            restart_count=restart_count,
+            cause_category=diagnosis_report.cause_category if diagnosis_report else None,
+            hypothesis=diagnosis_report.hypothesis if diagnosis_report else None,
+            diagnosis_confidence=diagnosis_report.confidence if diagnosis_report else None,
+            final_outcome="Simulated incident — no kubectl executed.",
+            dry_run=dry_run,
+        )
+        if state_result.get("health_status") != "healthy":
+            reporter.save(report)
+
+    return True
+
+
 def print_help():
     """Exibe os comandos disponíveis do agente."""
     print(f"\n{'─' * 60}")
-    print("  COMANDOS DISPONÍVEIS")
+    print("  AVAILABLE COMMANDS")
     print(f"{'─' * 60}")
     print("""
   GERAL
@@ -807,6 +907,12 @@ def print_help():
     incidents last <N>    → lista os últimos N incidents da sessão
     incidents all         → lista todos os incidents (todas as sessões)
 
+  SIMULAÇÃO
+    simulate crashloop    → testa pipeline com CrashLoopBackOff simulado
+    simulate imagepull    → testa pipeline com ImagePullBackOff simulado
+    simulate pending      → testa pipeline com Pending simulado
+    simulate oomkilled    → testa pipeline com OOMKilled simulado
+
   NAVEGAÇÃO
     clear / cls / reset   → limpa a tela (mantém sessão)
     use last              → reutiliza último pod do contexto
@@ -835,9 +941,9 @@ def run_interactive_mode(dry_run: bool = False, auto: bool = False):
     reporter = IncidentReporter(session_id=session_id)
     print(f"[SESSION ID] {session_id}")
     if dry_run:
-        print("[DRY-RUN] Modo simulação ativo — nenhuma ação destrutiva será executada.")
+        print("[DRY-RUN] Simulation mode active — no destructive actions will be executed.")
     if auto:
-        print("[AUTO] Modo automático ativo — sem confirmações interativas.")
+        print("[AUTO] Auto mode active — no interactive confirmations.")
     print("SRE Agent started.")
     print("Type your request or 'exit' to quit.\n")
 
@@ -897,11 +1003,11 @@ def run_interactive_mode(dry_run: bool = False, auto: bool = False):
             if not ctx.active_pod:
                 print("[SESSION] Nenhum pod ativo. Execute um comando com pod primeiro.")
             elif not ctx.last_action:
-                print("[SESSION] Nenhuma ação anterior registrada.")
+                print("[SESSION] No previous action recorded.")
             elif ctx.last_action not in {"get_pod_logs", "get_pod_previous_logs", "describe_pod", "get_pod_status", "get_pod_node"}:
-                print(f"[SESSION] Ação '{ctx.last_action}' não pode ser reutilizada com 'use last'.")
+                print(f"[SESSION] Action '{ctx.last_action}' cannot be reused with 'use last'.")
             else:
-                print(f"[SESSION] Usando último pod: {ctx.active_pod}")
+                print(f"[SESSION] Using last pod: {ctx.active_pod}")
                 _params = {"namespace": ctx.active_namespace, "pod_name": ctx.active_pod}
                 _success, _output = execute_action(ctx.last_action, _params)
                 print()
@@ -979,6 +1085,11 @@ def run_interactive_mode(dry_run: bool = False, auto: bool = False):
                 print(f"{'─' * 60}")
             continue
 
+        _sim_match = re.match(r"^simulate\s+(\S+)$", query.strip(), re.IGNORECASE)
+        if _sim_match:
+            process_simulate_command(_sim_match.group(1), dry_run=dry_run, reporter=reporter)
+            continue
+
         process_user_input(query, ctx, dry_run=dry_run, reporter=reporter, interactive=not auto)
 
 
@@ -988,11 +1099,91 @@ def run_single_command_mode(query: str, dry_run: bool = False):
     reporter = IncidentReporter(session_id=session_id)
     print(f"[SESSION ID] {session_id}")
     if dry_run:
-        print("[DRY-RUN] Modo simulação ativo — nenhuma ação destrutiva será executada.")
+        print("[DRY-RUN] Simulation mode active — no destructive actions will be executed.")
+
+    _sim_match = re.match(r"^simulate\s+(\S+)$", query.strip(), re.IGNORECASE)
+    if _sim_match:
+        success = process_simulate_command(_sim_match.group(1), dry_run=dry_run, reporter=reporter)
+        sys.exit(EXIT_SUCCESS if success else EXIT_INVALID_INPUT)
+
     action_success = process_user_input(query, dry_run=dry_run, reporter=reporter)
     if not action_success:
         sys.exit(EXIT_KUBECTL_ERROR)
     sys.exit(EXIT_SUCCESS)
+
+
+_MONITOR_UNHEALTHY_STATES = {
+    "CrashLoopBackOff", "OOMKilled", "ImagePullBackOff",
+    "ErrImagePull", "Pending", "Error",
+}
+
+
+def run_monitor_mode(namespace: str, interval: int = 30) -> None:
+    """Inicia o loop de monitoramento contínuo para o namespace informado.
+
+    Para cada mudança de estado detectada:
+      - Exibe a transição (anterior → atual)
+      - Para estados não saudáveis, dispara o pipeline completo de diagnóstico
+    O loop é encerrado por Ctrl+C.
+    """
+    session_id = str(uuid.uuid4())[:8]
+    reporter = IncidentReporter(session_id=session_id)
+    print(f"[SESSION ID] {session_id}")
+    print(f"[MONITOR] namespace: {namespace} | interval: {interval}s")
+    print(f"[MONITOR] Pressione Ctrl+C para encerrar.\n")
+
+    def on_change(change: dict) -> None:
+        pod_name = change["pod_name"]
+        prev = change["previous_status"] or "—"
+        curr = change["current_status"]
+
+        if curr is None:
+            print(f"\n[MONITOR] {pod_name}: {prev} → removido")
+            return
+
+        print(f"\n[MONITOR] {pod_name}: {prev} → {curr}")
+
+        if curr in _MONITOR_UNHEALTHY_STATES:
+            query = f"check pod {pod_name} in namespace {namespace}"
+            process_user_input(query, dry_run=False, reporter=reporter, interactive=False)
+
+    watcher = ClusterWatcher(namespace=namespace, interval=interval)
+    try:
+        watcher.run(on_change)
+    except KeyboardInterrupt:
+        print("\n[MONITOR] Encerrado.")
+
+
+def run_events_mode(namespace: str) -> None:
+    """Inicia o monitoramento orientado a eventos para o namespace informado.
+
+    Para cada evento relevante recebido via kubectl get events --watch:
+      - Imprime o evento de forma clara no terminal
+      - Dispara o pipeline completo de diagnóstico para estados não saudáveis
+    O loop é encerrado por Ctrl+C.
+    """
+    import threading as _threading
+
+    session_id = str(uuid.uuid4())[:8]
+    reporter = IncidentReporter(session_id=session_id)
+    print(f"[SESSION ID] {session_id}")
+    print(f"[EVENTS] namespace: {namespace}")
+    print(f"[EVENTS] Pressione Ctrl+C para encerrar.\n")
+
+    def on_event(event_type: str, pod_name: str, message: str, namespace: str) -> None:
+        print(f"\n[EVENT] {event_type} | pod: {pod_name} | {message}")
+        query = f"check pod {pod_name} in namespace {namespace}"
+        process_user_input(query, dry_run=False, reporter=reporter, interactive=False)
+
+    watcher = EventWatcher(namespace=namespace)
+    watcher.start(on_event)
+
+    stop = _threading.Event()
+    try:
+        stop.wait()
+    except KeyboardInterrupt:
+        watcher.stop()
+        print("\n[EVENTS] Encerrado.")
 
 
 def main():
@@ -1004,8 +1195,54 @@ def main():
     args = sys.argv[1:]
     dry_run = "--dry-run" in args
     auto = "--auto" in args
-    query_args = [a for a in args if a not in ("--dry-run", "--auto")]
-    query = " ".join(query_args).strip() if query_args else None
+    remaining = [a for a in args if a not in ("--dry-run", "--auto")]
+
+    # Subcomando: monitor --namespace <ns> [--interval <n>]
+    if remaining and remaining[0] == "monitor":
+        monitor_args = remaining[1:]
+        namespace = None
+        interval = 30
+        i = 0
+        while i < len(monitor_args):
+            if monitor_args[i] == "--namespace" and i + 1 < len(monitor_args):
+                namespace = monitor_args[i + 1]
+                i += 2
+            elif monitor_args[i] == "--interval" and i + 1 < len(monitor_args):
+                try:
+                    interval = int(monitor_args[i + 1])
+                except ValueError:
+                    print("[ERROR] --interval must be an integer.")
+                    sys.exit(EXIT_INVALID_INPUT)
+                i += 2
+            else:
+                i += 1
+        if not namespace:
+            print("[ERROR] monitor requer --namespace <nome>.")
+            print("        Ex: python main.py monitor --namespace sre-demo")
+            print("        Ex: python main.py monitor --namespace sre-demo --interval 10")
+            sys.exit(EXIT_INVALID_INPUT)
+        run_monitor_mode(namespace=namespace, interval=interval)
+        return
+
+    # Subcomando: events --namespace <ns>
+    if remaining and remaining[0] == "events":
+        events_args = remaining[1:]
+        namespace = None
+        i = 0
+        while i < len(events_args):
+            if events_args[i] == "--namespace" and i + 1 < len(events_args):
+                namespace = events_args[i + 1]
+                i += 2
+            else:
+                i += 1
+        if not namespace:
+            print("[ERROR] events requer --namespace <nome>.")
+            print("        Ex: python main.py events --namespace sre-demo")
+            sys.exit(EXIT_INVALID_INPUT)
+        run_events_mode(namespace=namespace)
+        return
+
+    query = " ".join(remaining).strip() if remaining else None
 
     if query:
         run_single_command_mode(query, dry_run=dry_run)
