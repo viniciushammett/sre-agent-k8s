@@ -48,6 +48,7 @@ from analyzers.diagnosis_engine import DiagnosisEngine
 from analyzers.workload_classifier import WorkloadClassifier, NO_RESTART
 from reporters.incident_reporter import IncidentReporter, IncidentReport
 from utils.pod_resolver import resolve_pod_name
+from simulation.simulator import build_simulated_incident, SUPPORTED_STATES
 
 AUTO_REMEDIATE = True
 AUTO_FOLLOW_UP = True
@@ -768,6 +769,101 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
     return summary.get("initial_action_success", True)
 
 
+def process_simulate_command(state: str, dry_run: bool = False, reporter: IncidentReporter = None) -> bool:
+    """Executa o pipeline de diagnóstico completo com estado simulado, sem kubectl.
+
+    Injeta status_data fabricado pelo simulator e passa pelo fluxo:
+        build_simulated_incident → evaluate_pod_state → DiagnosisEngine → reporter
+    Sem execute_action, sem follow-up, sem remediação real.
+    """
+    try:
+        status_data = build_simulated_incident(state)
+    except ValueError as e:
+        print(f"[SIMULATION ERROR] {e}")
+        valid = ", ".join(sorted(SUPPORTED_STATES))
+        print(f"[SIMULATION] Estados válidos: {valid}")
+        return False
+
+    pod_name      = status_data["pod_name"]
+    namespace     = status_data["namespace"]
+    parsed_status = status_data["parsed_status"]
+    container_name = status_data.get("container_name")
+    restart_count  = status_data.get("restart_count")
+
+    print(f"\n{'═' * 60}")
+    print(f"  [SIMULATION] Estado: {state.upper()}")
+    print(f"{'═' * 60}")
+    print(f"Pod:       {pod_name}")
+    print(f"Namespace: {namespace}")
+    print(f"Status:    {parsed_status}")
+    if container_name:
+        print(f"Container: {container_name}")
+    print(f"Restarts:  {restart_count}")
+
+    state_result = evaluate_pod_state(
+        parsed_status,
+        namespace=namespace,
+        pod_name=pod_name,
+        container_name=container_name,
+    )
+
+    _section("STATE EVALUATION")
+    print(f"Health status:        {state_result['health_status']}")
+    print(f"Requires remediation: {state_result['requires_remediation']}")
+    print(f"Recommended action:   {state_result['recommended_action']}")
+
+    diagnosis_report = None
+    if state_result["health_status"] != "healthy" and parsed_status:
+        diagnosis_report = _diagnosis_engine.investigate(
+            state=parsed_status,
+            pod_name=pod_name,
+            namespace=namespace,
+            container_name=container_name,
+        )
+        _section("DIAGNOSIS")
+        print(f"State:                 {diagnosis_report.state}")
+        print(f"Cause category:        {diagnosis_report.cause_category}")
+        print(f"Confidence:            {diagnosis_report.confidence}")
+        print(f"Hypothesis:            {diagnosis_report.hypothesis}")
+        if diagnosis_report.evidence:
+            print(f"Evidence ({len(diagnosis_report.evidence)} items collected):")
+            for e in diagnosis_report.evidence:
+                print(f"  · {e[:100]}")
+        if diagnosis_report.recommended_actions:
+            print("Recommended actions:")
+            for i, act in enumerate(diagnosis_report.recommended_actions, 1):
+                print(f"  {i}. {act}")
+        print(f"Safe to automate:      {diagnosis_report.safe_to_automate}")
+        print(f"Requires human review: {diagnosis_report.requires_human_review}")
+
+    print(f"\n{'─' * 60}")
+    print(f"  [SIMULATION] Pipeline completo — nenhum kubectl executado.")
+    print(f"{'─' * 60}")
+
+    if reporter:
+        report = reporter.build(
+            user_input=f"simulate {state}",
+            namespace=namespace,
+            pod_name=pod_name,
+            input_type="simulation",
+            action="get_pod_status",
+            action_success=True,
+            detected_state=parsed_status,
+            health_status=state_result.get("health_status"),
+            container_name=container_name,
+            restart_count=restart_count,
+            cause_category=diagnosis_report.cause_category if diagnosis_report else None,
+            hypothesis=diagnosis_report.hypothesis if diagnosis_report else None,
+            diagnosis_confidence=diagnosis_report.confidence if diagnosis_report else None,
+            final_outcome="Simulated incident — no kubectl executed.",
+            dry_run=dry_run,
+        )
+        if state_result.get("health_status") != "healthy":
+            reporter.save(report)
+
+    return True
+
+
 def print_help():
     """Exibe os comandos disponíveis do agente."""
     print(f"\n{'─' * 60}")
@@ -806,6 +902,12 @@ def print_help():
     incidents             → lista incidents da sessão atual
     incidents last <N>    → lista os últimos N incidents da sessão
     incidents all         → lista todos os incidents (todas as sessões)
+
+  SIMULAÇÃO
+    simulate crashloop    → testa pipeline com CrashLoopBackOff simulado
+    simulate imagepull    → testa pipeline com ImagePullBackOff simulado
+    simulate pending      → testa pipeline com Pending simulado
+    simulate oomkilled    → testa pipeline com OOMKilled simulado
 
   NAVEGAÇÃO
     clear / cls / reset   → limpa a tela (mantém sessão)
@@ -979,6 +1081,11 @@ def run_interactive_mode(dry_run: bool = False, auto: bool = False):
                 print(f"{'─' * 60}")
             continue
 
+        _sim_match = re.match(r"^simulate\s+(\S+)$", query.strip(), re.IGNORECASE)
+        if _sim_match:
+            process_simulate_command(_sim_match.group(1), dry_run=dry_run, reporter=reporter)
+            continue
+
         process_user_input(query, ctx, dry_run=dry_run, reporter=reporter, interactive=not auto)
 
 
@@ -989,6 +1096,12 @@ def run_single_command_mode(query: str, dry_run: bool = False):
     print(f"[SESSION ID] {session_id}")
     if dry_run:
         print("[DRY-RUN] Modo simulação ativo — nenhuma ação destrutiva será executada.")
+
+    _sim_match = re.match(r"^simulate\s+(\S+)$", query.strip(), re.IGNORECASE)
+    if _sim_match:
+        success = process_simulate_command(_sim_match.group(1), dry_run=dry_run, reporter=reporter)
+        sys.exit(EXIT_SUCCESS if success else EXIT_INVALID_INPUT)
+
     action_success = process_user_input(query, dry_run=dry_run, reporter=reporter)
     if not action_success:
         sys.exit(EXIT_KUBECTL_ERROR)
