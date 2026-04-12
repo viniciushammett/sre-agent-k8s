@@ -2,10 +2,12 @@
 SRE Agent Kubernetes — ponto de entrada principal.
 
 Modos de operação:
-    python main.py                    # modo interativo (REPL)
-    python main.py "comando"          # modo single command
-    python main.py --dry-run          # modo dry-run (simulação)
-    python main.py --dry-run "cmd"    # single command em dry-run
+    python main.py                                      # modo interativo (REPL)
+    python main.py "comando"                            # modo single command
+    python main.py --dry-run                            # modo dry-run (simulação)
+    python main.py --dry-run "cmd"                      # single command em dry-run
+    python main.py monitor --namespace <ns>             # monitoramento contínuo
+    python main.py monitor --namespace <ns> --interval 10
 
 Exit codes (modo single command):
     0  — sucesso
@@ -49,6 +51,7 @@ from analyzers.workload_classifier import WorkloadClassifier, NO_RESTART
 from reporters.incident_reporter import IncidentReporter, IncidentReport
 from utils.pod_resolver import resolve_pod_name
 from simulation.simulator import build_simulated_incident, SUPPORTED_STATES
+from monitoring.cluster_watcher import ClusterWatcher
 
 AUTO_REMEDIATE = True
 AUTO_FOLLOW_UP = True
@@ -1108,6 +1111,48 @@ def run_single_command_mode(query: str, dry_run: bool = False):
     sys.exit(EXIT_SUCCESS)
 
 
+_MONITOR_UNHEALTHY_STATES = {
+    "CrashLoopBackOff", "OOMKilled", "ImagePullBackOff",
+    "ErrImagePull", "Pending", "Error",
+}
+
+
+def run_monitor_mode(namespace: str, interval: int = 30) -> None:
+    """Inicia o loop de monitoramento contínuo para o namespace informado.
+
+    Para cada mudança de estado detectada:
+      - Exibe a transição (anterior → atual)
+      - Para estados não saudáveis, dispara o pipeline completo de diagnóstico
+    O loop é encerrado por Ctrl+C.
+    """
+    session_id = str(uuid.uuid4())[:8]
+    reporter = IncidentReporter(session_id=session_id)
+    print(f"[SESSION ID] {session_id}")
+    print(f"[MONITOR] namespace: {namespace} | interval: {interval}s")
+    print(f"[MONITOR] Pressione Ctrl+C para encerrar.\n")
+
+    def on_change(change: dict) -> None:
+        pod_name = change["pod_name"]
+        prev = change["previous_status"] or "—"
+        curr = change["current_status"]
+
+        if curr is None:
+            print(f"\n[MONITOR] {pod_name}: {prev} → removido")
+            return
+
+        print(f"\n[MONITOR] {pod_name}: {prev} → {curr}")
+
+        if curr in _MONITOR_UNHEALTHY_STATES:
+            query = f"check pod {pod_name} in namespace {namespace}"
+            process_user_input(query, dry_run=False, reporter=reporter, interactive=False)
+
+    watcher = ClusterWatcher(namespace=namespace, interval=interval)
+    try:
+        watcher.run(on_change)
+    except KeyboardInterrupt:
+        print("\n[MONITOR] Encerrado.")
+
+
 def main():
     if sys.stdout.encoding != 'utf-8':
         sys.stdout.reconfigure(encoding='utf-8')
@@ -1117,8 +1162,36 @@ def main():
     args = sys.argv[1:]
     dry_run = "--dry-run" in args
     auto = "--auto" in args
-    query_args = [a for a in args if a not in ("--dry-run", "--auto")]
-    query = " ".join(query_args).strip() if query_args else None
+    remaining = [a for a in args if a not in ("--dry-run", "--auto")]
+
+    # Subcomando: monitor --namespace <ns> [--interval <n>]
+    if remaining and remaining[0] == "monitor":
+        monitor_args = remaining[1:]
+        namespace = None
+        interval = 30
+        i = 0
+        while i < len(monitor_args):
+            if monitor_args[i] == "--namespace" and i + 1 < len(monitor_args):
+                namespace = monitor_args[i + 1]
+                i += 2
+            elif monitor_args[i] == "--interval" and i + 1 < len(monitor_args):
+                try:
+                    interval = int(monitor_args[i + 1])
+                except ValueError:
+                    print("[ERROR] --interval deve ser um número inteiro.")
+                    sys.exit(EXIT_INVALID_INPUT)
+                i += 2
+            else:
+                i += 1
+        if not namespace:
+            print("[ERROR] monitor requer --namespace <nome>.")
+            print("        Ex: python main.py monitor --namespace sre-demo")
+            print("        Ex: python main.py monitor --namespace sre-demo --interval 10")
+            sys.exit(EXIT_INVALID_INPUT)
+        run_monitor_mode(namespace=namespace, interval=interval)
+        return
+
+    query = " ".join(remaining).strip() if remaining else None
 
     if query:
         run_single_command_mode(query, dry_run=dry_run)
