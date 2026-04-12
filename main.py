@@ -352,12 +352,12 @@ def print_incident_summary(summary: dict):
 def _error_no_pod(ctx: "SessionContext | None") -> None:
     """Exibe erro de pod ausente com sugestão do último pod usado."""
     if ctx and ctx.active_pod:
-        print("[ERROR] Pod não especificado.")
-        print(f"        Último pod usado: {ctx.active_pod}")
+        print("[ERROR] No pod specified.")
+        print(f"        Last pod used: {ctx.active_pod}")
         print( "        Use: use last  — para reutilizar")
         print( "        Ou especifique: check pod <nome>")
     else:
-        print("[ERROR] Pod não especificado e nenhum pod ativo no contexto.")
+        print("[ERROR] No pod specified and no active pod in context.")
         print("        Use: check pod <nome> in namespace <ns>")
 
 
@@ -380,7 +380,7 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
         params_check = analysis["params"]
         if analysis["action"] in _REQUIRED_NAMESPACE_ACTIONS:
             if not params_check.get("namespace"):
-                print("[ERROR] Namespace não especificado.")
+                print("[ERROR] No namespace specified.")
                 print("        Use: set namespace <nome>")
                 return False
             if analysis["action"] in _REQUIRED_POD_ACTIONS:
@@ -458,7 +458,7 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
 
     if action in _REQUIRED_NAMESPACE_ACTIONS:
         if not params.get("namespace"):
-            print("[ERROR] Namespace não especificado.")
+            print("[ERROR] No namespace specified.")
             print("        Use: set namespace <nome>")
             return False
         if action in _REQUIRED_POD_ACTIONS:
@@ -637,17 +637,17 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
             # gate: bloquear restart para Job e CronJob
             if workload_info and workload_info.workload_type in NO_RESTART:
                 _section("AUTO-REMEDIATION")
-                print(f"[WORKLOAD GATE] Remediação bloqueada para {workload_info.workload_type}.")
+                print(f"[WORKLOAD GATE] Remediation blocked for {workload_info.workload_type}.")
                 if workload_info.workload_type == "Job":
-                    print("  Jobs não se resolvem com restart. Ações recomendadas:")
+                    print("  Jobs cannot be resolved with restart. Recommended actions:")
                     print("  1. Analisar logs do pod falho")
                     print("  2. Corrigir a causa raiz")
-                    print("  3. Criar novo Job se necessário")
+                    print("  3. Create a new Job if necessary")
                 elif workload_info.workload_type == "CronJob":
-                    print("  CronJobs são gerenciados automaticamente. Ações recomendadas:")
+                    print("  CronJobs are managed automatically. Recommended actions:")
                     print("  1. Analisar logs do pod falho")
-                    print("  2. Verificar schedule e configuração do CronJob")
-                    print("  3. Aguardar próximo ciclo ou triggerar manualmente")
+                    print("  2. Check CronJob schedule and configuration")
+                    print("  3. Wait for next cycle or trigger manually")
                 summary["remediation_executed"] = False
                 summary["final_outcome"] = f"Auto-remediation blocked: workload type {workload_info.workload_type} does not support restart."
                 # pular remediação
@@ -658,21 +658,21 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
                     # diálogo de confirmação — pergunta ANTES de checar o guard
                     recommended = state_result["recommended_action"]
                     action_target = workload_info.action_target if workload_info and workload_info.action_target else pod_name
-                    print(f"\n[REMEDIATION] Ação recomendada: {recommended}")
+                    print(f"\n[REMEDIATION] Recommended action: {recommended}")
                     print(f"             Alvo: {action_target}")
                     try:
                         confirm = input("Deseja executar a remediação? (y/n): ").strip().lower()
                     except (KeyboardInterrupt, EOFError):
                         confirm = "n"
                     if confirm != "y":
-                        print("[REMEDIATION] Remediação cancelada pelo usuário.")
+                        print("[REMEDIATION] Remediation cancelled by user.")
                         summary["remediation_executed"] = False
                         summary["final_outcome"] = "Remediação cancelada pelo usuário."
                     else:
                         allowed, reason = can_auto_remediate(namespace, pod_name, "delete_pod")
                         if not allowed:
                             print(f"[REMEDIATION GUARD] {reason}")
-                            print("[REMEDIATION] Remediação bloqueada pelo guard.")
+                            print("[REMEDIATION] Remediation blocked by guard.")
                             summary["remediation_action"] = "delete_pod"
                             summary["remediation_executed"] = False
                             summary["remediation_success"] = False
@@ -785,7 +785,7 @@ def process_simulate_command(state: str, dry_run: bool = False, reporter: Incide
     except ValueError as e:
         print(f"[SIMULATION ERROR] {e}")
         valid = ", ".join(sorted(SUPPORTED_STATES))
-        print(f"[SIMULATION] Estados válidos: {valid}")
+        print(f"[SIMULATION] Valid states: {valid}")
         return False
 
     pod_name      = status_data["pod_name"]
@@ -871,7 +871,7 @@ def process_simulate_command(state: str, dry_run: bool = False, reporter: Incide
 def print_help():
     """Exibe os comandos disponíveis do agente."""
     print(f"\n{'─' * 60}")
-    print("  COMANDOS DISPONÍVEIS")
+    print("  AVAILABLE COMMANDS")
     print(f"{'─' * 60}")
     print("""
   GERAL
@@ -941,9 +941,9 @@ def run_interactive_mode(dry_run: bool = False, auto: bool = False):
     reporter = IncidentReporter(session_id=session_id)
     print(f"[SESSION ID] {session_id}")
     if dry_run:
-        print("[DRY-RUN] Modo simulação ativo — nenhuma ação destrutiva será executada.")
+        print("[DRY-RUN] Simulation mode active — no destructive actions will be executed.")
     if auto:
-        print("[AUTO] Modo automático ativo — sem confirmações interativas.")
+        print("[AUTO] Auto mode active — no interactive confirmations.")
     print("SRE Agent started.")
     print("Type your request or 'exit' to quit.\n")
 
@@ -1003,11 +1003,11 @@ def run_interactive_mode(dry_run: bool = False, auto: bool = False):
             if not ctx.active_pod:
                 print("[SESSION] Nenhum pod ativo. Execute um comando com pod primeiro.")
             elif not ctx.last_action:
-                print("[SESSION] Nenhuma ação anterior registrada.")
+                print("[SESSION] No previous action recorded.")
             elif ctx.last_action not in {"get_pod_logs", "get_pod_previous_logs", "describe_pod", "get_pod_status", "get_pod_node"}:
-                print(f"[SESSION] Ação '{ctx.last_action}' não pode ser reutilizada com 'use last'.")
+                print(f"[SESSION] Action '{ctx.last_action}' cannot be reused with 'use last'.")
             else:
-                print(f"[SESSION] Usando último pod: {ctx.active_pod}")
+                print(f"[SESSION] Using last pod: {ctx.active_pod}")
                 _params = {"namespace": ctx.active_namespace, "pod_name": ctx.active_pod}
                 _success, _output = execute_action(ctx.last_action, _params)
                 print()
@@ -1099,7 +1099,7 @@ def run_single_command_mode(query: str, dry_run: bool = False):
     reporter = IncidentReporter(session_id=session_id)
     print(f"[SESSION ID] {session_id}")
     if dry_run:
-        print("[DRY-RUN] Modo simulação ativo — nenhuma ação destrutiva será executada.")
+        print("[DRY-RUN] Simulation mode active — no destructive actions will be executed.")
 
     _sim_match = re.match(r"^simulate\s+(\S+)$", query.strip(), re.IGNORECASE)
     if _sim_match:
@@ -1211,7 +1211,7 @@ def main():
                 try:
                     interval = int(monitor_args[i + 1])
                 except ValueError:
-                    print("[ERROR] --interval deve ser um número inteiro.")
+                    print("[ERROR] --interval must be an integer.")
                     sys.exit(EXIT_INVALID_INPUT)
                 i += 2
             else:
