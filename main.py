@@ -52,6 +52,7 @@ from reporters.incident_reporter import IncidentReporter, IncidentReport
 from utils.pod_resolver import resolve_pod_name
 from simulation.simulator import build_simulated_incident, SUPPORTED_STATES
 from monitoring.cluster_watcher import ClusterWatcher
+from monitoring.event_watcher import EventWatcher
 
 AUTO_REMEDIATE = True
 AUTO_FOLLOW_UP = True
@@ -1153,6 +1154,38 @@ def run_monitor_mode(namespace: str, interval: int = 30) -> None:
         print("\n[MONITOR] Encerrado.")
 
 
+def run_events_mode(namespace: str) -> None:
+    """Inicia o monitoramento orientado a eventos para o namespace informado.
+
+    Para cada evento relevante recebido via kubectl get events --watch:
+      - Imprime o evento de forma clara no terminal
+      - Dispara o pipeline completo de diagnóstico para estados não saudáveis
+    O loop é encerrado por Ctrl+C.
+    """
+    import threading as _threading
+
+    session_id = str(uuid.uuid4())[:8]
+    reporter = IncidentReporter(session_id=session_id)
+    print(f"[SESSION ID] {session_id}")
+    print(f"[EVENTS] namespace: {namespace}")
+    print(f"[EVENTS] Pressione Ctrl+C para encerrar.\n")
+
+    def on_event(event_type: str, pod_name: str, message: str, namespace: str) -> None:
+        print(f"\n[EVENT] {event_type} | pod: {pod_name} | {message}")
+        query = f"check pod {pod_name} in namespace {namespace}"
+        process_user_input(query, dry_run=False, reporter=reporter, interactive=False)
+
+    watcher = EventWatcher(namespace=namespace)
+    watcher.start(on_event)
+
+    stop = _threading.Event()
+    try:
+        stop.wait()
+    except KeyboardInterrupt:
+        watcher.stop()
+        print("\n[EVENTS] Encerrado.")
+
+
 def main():
     if sys.stdout.encoding != 'utf-8':
         sys.stdout.reconfigure(encoding='utf-8')
@@ -1189,6 +1222,24 @@ def main():
             print("        Ex: python main.py monitor --namespace sre-demo --interval 10")
             sys.exit(EXIT_INVALID_INPUT)
         run_monitor_mode(namespace=namespace, interval=interval)
+        return
+
+    # Subcomando: events --namespace <ns>
+    if remaining and remaining[0] == "events":
+        events_args = remaining[1:]
+        namespace = None
+        i = 0
+        while i < len(events_args):
+            if events_args[i] == "--namespace" and i + 1 < len(events_args):
+                namespace = events_args[i + 1]
+                i += 2
+            else:
+                i += 1
+        if not namespace:
+            print("[ERROR] events requer --namespace <nome>.")
+            print("        Ex: python main.py events --namespace sre-demo")
+            sys.exit(EXIT_INVALID_INPUT)
+        run_events_mode(namespace=namespace)
         return
 
     query = " ".join(remaining).strip() if remaining else None
