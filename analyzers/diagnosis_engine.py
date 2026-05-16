@@ -39,6 +39,7 @@ class DiagnosisReport:
     safe_to_automate: bool = False
     requires_human_review: bool = False
     confidence: str = "low"  # low | medium | high
+    correlation: Optional[dict] = None
 
 
 class DiagnosisEngine:
@@ -58,11 +59,13 @@ class DiagnosisEngine:
         "Running",
     }
 
-    def __init__(self, remediator):
+    def __init__(self, remediator, metrics_analyzer=None):
         """
         remediator: instância de KubectlRemediator para executar coletas.
+        metrics_analyzer: instância de MetricsAnalyzer, ou None para desabilitar correlação.
         """
         self.remediator = remediator
+        self.metrics_analyzer = metrics_analyzer
 
     def investigate(self, state: str, pod_name: str, namespace: str, container_name: str = None) -> DiagnosisReport:
         """
@@ -73,23 +76,38 @@ class DiagnosisEngine:
 
         try:
             if state == "CrashLoopBackOff":
-                return self._investigate_crashloop(pod_name, namespace, container_name)
+                report = self._investigate_crashloop(pod_name, namespace, container_name)
             elif state == "OOMKilled":
-                return self._investigate_oomkilled(pod_name, namespace, container_name)
+                report = self._investigate_oomkilled(pod_name, namespace, container_name)
             elif state in ("ImagePullBackOff", "ErrImagePull"):
-                return self._investigate_imagepull(pod_name, namespace, state)
+                report = self._investigate_imagepull(pod_name, namespace, state)
             elif state == "Pending":
-                return self._investigate_pending(pod_name, namespace)
+                report = self._investigate_pending(pod_name, namespace)
             elif state in ("CreateContainerConfigError", "CreateContainerError"):
-                return self._investigate_container_config(pod_name, namespace)
+                report = self._investigate_container_config(pod_name, namespace)
             elif state == "Running":
-                return self._investigate_running_unhealthy(pod_name, namespace, container_name)
+                report = self._investigate_running_unhealthy(pod_name, namespace, container_name)
             else:
                 report.hypothesis = f"Estado '{state}' não possui handler de diagnóstico."
-                return report
         except Exception as e:
             report.hypothesis = f"Erro durante diagnóstico: {str(e)}"
-            return report
+
+        if self.metrics_analyzer:
+            try:
+                from metrics.correlation_engine import correlate_signals
+                metrics_result = self.metrics_analyzer.analyze(pod_name, namespace)
+                if metrics_result["available"]:
+                    log_analysis = {"cause": report.hypothesis, "confidence": report.confidence}
+                    report.correlation = correlate_signals(
+                        state={"status": state, "pod": pod_name, "namespace": namespace},
+                        log_analysis=log_analysis,
+                        metrics=metrics_result,
+                        events=[],
+                    )
+            except Exception:
+                pass  # falha silenciosa — não impede o diagnóstico
+
+        return report
 
     def _investigate_crashloop(self, pod_name, namespace, container_name):
         report = DiagnosisReport(state="CrashLoopBackOff")

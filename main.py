@@ -53,6 +53,8 @@ from utils.pod_resolver import resolve_pod_name
 from simulation.simulator import build_simulated_incident, SUPPORTED_STATES
 from monitoring.cluster_watcher import ClusterWatcher
 from monitoring.event_watcher import EventWatcher
+from metrics.prometheus_client import PrometheusClient
+from metrics.metrics_analyzer import MetricsAnalyzer
 
 AUTO_REMEDIATE = True
 AUTO_FOLLOW_UP = True
@@ -321,6 +323,20 @@ def _section(title: str):
     print(f"{'─' * 60}")
 
 
+def _print_correlation(correlation: dict) -> None:
+    """Exibe a seção CORRELATION a partir do dict retornado por correlate_signals()."""
+    _section("CORRELATION")
+    print(f"Confidence   : {correlation['confidence']}")
+    print(f"Root cause   : {correlation['root_cause']}")
+    print(f"Action       : {correlation['recommended_action']}")
+    factors = correlation.get("contributing_factors", [])
+    if factors:
+        print()
+        print("Contributing factors:")
+        for f in factors:
+            print(f"  • {f}")
+
+
 def print_incident_summary(summary: dict):
     print(f"\n{'═' * 60}")
     print(f"  INCIDENT SUMMARY")
@@ -581,6 +597,9 @@ def process_user_input(query: str, ctx: SessionContext | None = None, dry_run: b
             print(f"Safe to automate:      {diagnosis_report.safe_to_automate}")
             print(f"Requires human review: {diagnosis_report.requires_human_review}")
 
+            if diagnosis_report.correlation:
+                _print_correlation(diagnosis_report.correlation)
+
         follow_up_result = maybe_execute_follow_up(state_result, interactive=interactive)
         summary["follow_up_executed"] = follow_up_result["executed"]
 
@@ -839,6 +858,9 @@ def process_simulate_command(state: str, dry_run: bool = False, reporter: Incide
                 print(f"  {i}. {act}")
         print(f"Safe to automate:      {diagnosis_report.safe_to_automate}")
         print(f"Requires human review: {diagnosis_report.requires_human_review}")
+
+        if diagnosis_report.correlation:
+            _print_correlation(diagnosis_report.correlation)
 
     print(f"\n{'─' * 60}")
     print(f"  [SIMULATION] Pipeline completo — nenhum kubectl executado.")
@@ -1193,6 +1215,20 @@ def main():
         sys.stderr.reconfigure(encoding='utf-8')
 
     args = sys.argv[1:]
+
+    prometheus_url = None
+    if "--prometheus-url" in args:
+        idx = args.index("--prometheus-url")
+        if idx + 1 < len(args):
+            prometheus_url = args[idx + 1]
+            args = args[:idx] + args[idx + 2:]
+
+    if prometheus_url:
+        global _diagnosis_engine
+        _prometheus_client = PrometheusClient(prometheus_url)
+        _metrics_analyzer = MetricsAnalyzer(_prometheus_client)
+        _diagnosis_engine = DiagnosisEngine(_RemediatorAdapter(), metrics_analyzer=_metrics_analyzer)
+
     dry_run = "--dry-run" in args
     auto = "--auto" in args
     remaining = [a for a in args if a not in ("--dry-run", "--auto")]
