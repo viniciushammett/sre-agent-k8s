@@ -98,6 +98,18 @@ This project simulates real-world SRE workflows by combining:
 - Automatically triggers incident pipeline on relevant events
 - Runs in parallel with monitoring mode
 
+### 📈 Prometheus Integration *(optional)*
+- Connect to any Prometheus endpoint via `--prometheus-url`
+- Query CPU (millicores) and memory (MiB) usage per pod
+- Zero external dependencies — pure HTTP via urllib
+- Silently skipped if Prometheus is unavailable
+
+### 🔗 Correlation Engine
+- Correlates state, logs, metrics and events into a single signal
+- Produces `confidence`, `root_cause`, `contributing_factors` and `recommended_action`
+- Displayed as `CORRELATION` section in output after `DIAGNOSIS`
+- Confidence levels: `high` / `medium` / `low`
+
 ---
 
 ## ⚙️ How it works
@@ -110,8 +122,10 @@ This project simulates real-world SRE workflows by combining:
 6. The WorkloadClassifier resolves the pod's owner chain
 7. The DiagnosisEngine investigates the workload state
 8. The log analyzer infers the probable cause
-9. In interactive mode: confirmation dialog before remediation
-10. A structured incident summary is generated and optionally displayed
+9. MetricsAnalyzer queries CPU / memory usage via Prometheus (optional)
+10. Correlation Engine correlates signals across state, logs, metrics and events
+11. In interactive mode: confirmation dialog before remediation
+12. A structured incident summary is generated and optionally displayed
 
 ---
 
@@ -128,6 +142,8 @@ User Input
 → Follow-up Engine
 → DiagnosisEngine (guided investigation)
 → Log Analyzer
+→ MetricsAnalyzer (optional — requires --prometheus-url)
+→ Correlation Engine
 → Confirmation Dialog (interactive mode)
 → Cause-Based Remediator
 → Remediation Guard
@@ -194,6 +210,10 @@ chmod +x sre-agent-linux
 
 # Event-driven mode
 ./sre-agent-linux events --namespace <namespace>
+
+# With Prometheus metrics integration (optional)
+./sre-agent-linux --prometheus-url http://prometheus:9090
+./sre-agent-linux --prometheus-url http://prometheus:9090 "check pod demo-nginx in namespace sre-demo"
 ```
 
 **Windows:**
@@ -212,6 +232,9 @@ sre-agent-windows.exe monitor --namespace <namespace>
 
 # Event-driven mode
 sre-agent-windows.exe events --namespace <namespace>
+
+# With Prometheus metrics integration (optional)
+sre-agent-windows.exe --prometheus-url http://prometheus:9090
 ```
 
 ### Exit codes (single command mode)
@@ -315,6 +338,7 @@ incidents all              # all namespaces with [ns:...] tag
 - Designed for local or controlled environments
 - Dry-run mode simulates all destructive actions safely
 - Partial pod names are automatically resolved
+- Prometheus integration is optional — agent works fully without it
 
 ---
 
